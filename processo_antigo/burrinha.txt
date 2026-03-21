@@ -1,0 +1,111 @@
+######## TODOS OS DIREITOS RESERVADOS AO CHAT GPT
+
+################################# OBTER TODAS AS TASKS E US - Via console no JIRA:
+########################################### pre-requisito: setar o array issueKeys com as us da release em específico.
+########################################### entrar em qualquer página do Jira, abrir o console e rodar o script
+
+// IDs das estórias separadas por ";"
+let issueKeys = ['SQCRM-6805',
+'SQCRM-6806',
+'SQCRM-6823',
+'SQCRM-6824',
+'SQCRM-6825',
+'SQCRM-6831',
+'SQCRM-6836',
+'SQCRM-7027',
+'SQCRM-6604',
+'SQCRM-6811']
+let jiraBaseUrl = 'https://agile.corp.edp.pt/rest/api/2/issue/';
+issueKeys.forEach(issueKey => {
+    let url = `${jiraBaseUrl}${issueKey}`;    
+    fetch(url, {
+        method: 'GET',
+        headers: {
+            'Accept': 'application/json',            
+            'Content-Type': 'application/json',
+        }
+    })
+    .then(response => {
+        if (!response.ok) {
+            throw new Error(`Erro ao buscar a estória ${issueKey}`);
+        }
+        return response.json();
+    })
+    .then(data => {
+        console.log(data.key);        
+        let subtasks = data.fields.subtasks;
+        
+		if (subtasks && subtasks.length > 0) {			
+            subtasks.forEach(subtask => {
+				console.log(subtask.key);
+            });
+        }		
+    })
+    .catch(error => {
+        console.error('Erro ao acessar a API do Jira:', error);
+    });
+});
+
+################################# OBTER TODOS OS COMMMITS QUE FORAM FEITOS EM BRANCHES COM O NOME DA US / TASK - Script Python:
+########################################### pre-requisito: ter umaa lista com todas as us e task em um arquivo nomeado "historias.txt" no mesmo diretório do script
+########################################### Deve rodar esse script dentro do diretório que está o repositório
+
+import subprocess
+import os
+from datetime import datetime
+
+# Arquivos
+historias_file = "historias.txt"
+saida_file = "commits_encontrados.txt"
+
+# Lê as histórias
+with open(historias_file, "r", encoding="utf-8") as f:
+    historias = [linha.strip() for linha in f if linha.strip()]
+
+resultados = []
+
+for historia in historias:
+    # Procura merges no develop relacionados à história
+    cmd_merges = [
+        "git", "log", "dev", "--merges", "--first-parent",
+        "--pretty=%H;%s"
+    ]
+    merges = subprocess.check_output(cmd_merges, encoding="utf-8", errors="ignore").splitlines()
+
+    for merge in merges:
+        commit_merge, mensagem = merge.split(";", 1)
+
+        if historia.lower() in mensagem.lower():
+            # Pega os dois pais do merge (primeiro é develop, segundo é branch mergeada)
+            pais = subprocess.check_output(
+                ["git", "show", "--pretty=%P", "-s", commit_merge],
+                encoding="utf-8"
+            ).strip().split()
+
+            if len(pais) < 2:
+                continue
+
+            branch_parent = pais[1]
+
+            # Lista commits dessa branch (até o merge), excluindo merge commits
+            cmd_commits = [
+                "git", "log", f"{pais[0]}..{branch_parent}",
+                "--no-merges",
+                "--pretty=%H;%ct;%an"
+            ]
+            commits = subprocess.check_output(cmd_commits, encoding="utf-8", errors="ignore").splitlines()
+
+            for linha in commits:
+                hash_commit, timestamp, autor = linha.split(";", 2)
+                data_fmt = datetime.fromtimestamp(int(timestamp)).strftime("%d/%m/%Y %H:%M:%S")
+                resultados.append((hash_commit, data_fmt, autor, mensagem))
+
+# Ordena por data
+resultados.sort(key=lambda x: datetime.strptime(x[1], "%d/%m/%Y %H:%M:%S"))
+
+# Salva no arquivo
+with open(saida_file, "w", encoding="utf-8") as f:
+    for r in resultados:
+        f.write(f"{r[0]};{r[1]};{r[2]};{r[3]}\n")
+
+print(f"Commits salvos em {saida_file}")
