@@ -11,6 +11,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
+from equalizador_promax import __version__
 from equalizador_promax.config import AppConfig, JiraSettings, default_config_path, load_config, save_config
 from equalizador_promax.jira_client import save_jira_secret
 
@@ -46,6 +47,8 @@ class EqualizadorPromaxApp:
         self.release_id_var = tk.StringVar()
         self.stories_var = tk.StringVar()
         self.force_now_var = tk.BooleanVar(value=False)
+        self.source_ref_var = tk.StringVar(value="origin/develop")
+        self.target_ref_var = tk.StringVar(value="origin/quality")
 
         self.base_url_var = tk.StringVar()
         self.auth_mode_var = tk.StringVar(value="token")
@@ -63,11 +66,13 @@ class EqualizadorPromaxApp:
         header = ttk.Frame(self.root, padding=16)
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
+        header.columnconfigure(1, weight=0)
         ttk.Label(header, text="Equalizador ProMax", font=("Segoe UI", 18, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(header, text=f"Versao {__version__}", font=("Segoe UI", 10, "bold")).grid(row=0, column=1, sticky="e")
         ttk.Label(
             header,
-            text="Selecione o repositório, informe a release ou as stories e acompanhe a execução sem sair da aplicação.",
-        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+            text="Selecione o repositorio, informe a release ou as stories e acompanhe a execucao sem sair da aplicacao.",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         top = ttk.Frame(self.root, padding=(16, 0, 16, 12))
         top.grid(row=1, column=0, sticky="nsew")
@@ -88,10 +93,10 @@ class EqualizadorPromaxApp:
         self.output_text.configure(state="disabled")
 
     def _build_execution_panel(self, parent: ttk.Frame) -> ttk.LabelFrame:
-        frame = ttk.LabelFrame(parent, text="Execução", padding=16)
+        frame = ttk.LabelFrame(parent, text="Execucao", padding=16)
         frame.columnconfigure(1, weight=1)
 
-        ttk.Label(frame, text="Repositório").grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, text="Repositorio").grid(row=0, column=0, sticky="w")
         repo_entry = ttk.Entry(frame, textvariable=self.repo_var)
         repo_entry.grid(row=0, column=1, sticky="ew", padx=(8, 8))
         ttk.Button(frame, text="Selecionar...", command=self._select_repo).grid(row=0, column=2, sticky="ew")
@@ -121,19 +126,22 @@ class EqualizadorPromaxApp:
         ttk.Label(frame, text="Stories").grid(row=3, column=0, sticky="nw", pady=(12, 0))
         self.stories_entry = ttk.Entry(frame, textvariable=self.stories_var)
         self.stories_entry.grid(row=3, column=1, columnspan=2, sticky="ew", pady=(12, 0))
-        ttk.Label(
-            frame,
-            text="Separe por vírgula. Ex.: SQCRM-7637,SQCRM-7638",
-        ).grid(row=4, column=1, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Label(frame, text="Separe por virgula. Ex.: SQCRM-7637,SQCRM-7638").grid(
+            row=4, column=1, columnspan=2, sticky="w", pady=(4, 0)
+        )
 
-        ttk.Checkbutton(
-            frame,
-            text="Executar com force-now",
-            variable=self.force_now_var,
-        ).grid(row=5, column=1, columnspan=2, sticky="w", pady=(12, 0))
+        ttk.Label(frame, text="Branche origem").grid(row=5, column=0, sticky="w", pady=(12, 0))
+        ttk.Entry(frame, textvariable=self.source_ref_var).grid(row=5, column=1, columnspan=2, sticky="ew", pady=(12, 0))
+
+        ttk.Label(frame, text="Branche destino").grid(row=6, column=0, sticky="w", pady=(12, 0))
+        ttk.Entry(frame, textvariable=self.target_ref_var).grid(row=6, column=1, columnspan=2, sticky="ew", pady=(12, 0))
+
+        ttk.Checkbutton(frame, text="Executar com force-now", variable=self.force_now_var).grid(
+            row=7, column=1, columnspan=2, sticky="w", pady=(12, 0)
+        )
 
         actions = ttk.Frame(frame)
-        actions.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(20, 0))
+        actions.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(20, 0))
         for column in range(3):
             actions.columnconfigure(column, weight=1)
         ttk.Button(actions, text="Doctor", command=self._run_doctor).grid(row=0, column=0, sticky="ew", padx=(0, 8))
@@ -141,25 +149,25 @@ class EqualizadorPromaxApp:
         ttk.Button(actions, text="Retomar", command=self._resume_run).grid(row=0, column=2, sticky="ew", padx=(8, 0))
 
         secondary = ttk.Frame(frame)
-        secondary.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        secondary.grid(row=9, column=0, columnspan=3, sticky="ew", pady=(10, 0))
         for column in range(3):
             secondary.columnconfigure(column, weight=1)
         ttk.Button(secondary, text="Status", command=self._show_status).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        ttk.Button(secondary, text="Abrir Último Run", command=self._open_latest_run_folder).grid(
+        ttk.Button(secondary, text="Abrir Ultimo Run", command=self._open_latest_run_folder).grid(
             row=0, column=1, sticky="ew", padx=4
         )
-        ttk.Button(secondary, text="Limpar Saída", command=self._clear_output).grid(row=0, column=2, sticky="ew", padx=(8, 0))
+        ttk.Button(secondary, text="Limpar Saida", command=self._clear_output).grid(row=0, column=2, sticky="ew", padx=(8, 0))
 
         ttk.Label(
             frame,
-            text="Fluxo sugerido: salvar configuração Jira, rodar Doctor, executar a release e usar Retomar quando houver conflito.",
-        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(18, 0))
+            text="Fluxo sugerido: salvar configuracao Jira, rodar Doctor, executar a release e usar Retomar quando houver conflito.",
+        ).grid(row=10, column=0, columnspan=3, sticky="w", pady=(18, 0))
 
         self._toggle_input_mode()
         return frame
 
     def _build_config_panel(self, parent: ttk.Frame) -> ttk.LabelFrame:
-        frame = ttk.LabelFrame(parent, text="Configuração Jira", padding=16)
+        frame = ttk.LabelFrame(parent, text="Configuracao Jira", padding=16)
         frame.columnconfigure(1, weight=1)
 
         ttk.Label(frame, text="Arquivo de config").grid(row=0, column=0, sticky="w")
@@ -168,12 +176,12 @@ class EqualizadorPromaxApp:
         ttk.Label(frame, text="URL base").grid(row=1, column=0, sticky="w", pady=(12, 0))
         ttk.Entry(frame, textvariable=self.base_url_var).grid(row=1, column=1, sticky="ew", pady=(12, 0), padx=(8, 0))
 
-        ttk.Label(frame, text="Autenticação").grid(row=2, column=0, sticky="w", pady=(12, 0))
+        ttk.Label(frame, text="Autenticacao").grid(row=2, column=0, sticky="w", pady=(12, 0))
         auth_combo = ttk.Combobox(frame, textvariable=self.auth_mode_var, values=("token", "basic"), state="readonly")
         auth_combo.grid(row=2, column=1, sticky="ew", pady=(12, 0), padx=(8, 0))
         auth_combo.bind("<<ComboboxSelected>>", lambda _event: self._toggle_auth_mode())
 
-        ttk.Label(frame, text="Usuário").grid(row=3, column=0, sticky="w", pady=(12, 0))
+        ttk.Label(frame, text="Usuario").grid(row=3, column=0, sticky="w", pady=(12, 0))
         self.username_entry = ttk.Entry(frame, textvariable=self.username_var)
         self.username_entry.grid(row=3, column=1, sticky="ew", pady=(12, 0), padx=(8, 0))
 
@@ -183,32 +191,28 @@ class EqualizadorPromaxApp:
         secret_frame.columnconfigure(0, weight=1)
         self.secret_entry = ttk.Entry(secret_frame, textvariable=self.secret_var, show="*")
         self.secret_entry.grid(row=0, column=0, sticky="ew")
-        self.secret_toggle_button = ttk.Button(
-            secret_frame,
-            text="Mostrar",
-            command=self._toggle_secret_visibility,
-            width=10,
-        )
+        self.secret_toggle_button = ttk.Button(secret_frame, text="Mostrar", command=self._toggle_secret_visibility, width=10)
         self.secret_toggle_button.grid(row=0, column=1, padx=(8, 0))
         ttk.Label(
             frame,
-            text="Informe aqui o token real que a aplicação deve usar para acessar o Jira.",
+            text="Informe aqui o token real que a aplicacao deve usar para acessar o Jira.",
         ).grid(row=5, column=1, sticky="w", pady=(4, 0))
 
         ttk.Label(frame, text="Timeout (s)").grid(row=6, column=0, sticky="w", pady=(12, 0))
         ttk.Entry(frame, textvariable=self.timeout_var).grid(row=6, column=1, sticky="ew", pady=(12, 0), padx=(8, 0))
 
-        ttk.Button(frame, text="Salvar Configuração", command=self._save_jira_configuration).grid(
+        ttk.Button(frame, text="Salvar Configuracao", command=self._save_jira_configuration).grid(
             row=7, column=0, columnspan=2, sticky="ew", pady=(18, 0)
         )
 
         ttk.Label(
             frame,
-            text="Sugestões úteis para o usuário final:\n"
+            text="Sugestoes uteis para o usuario final:\n"
             "- Executar a release direto pelo ID.\n"
-            "- Abrir a pasta do último run sem navegar na árvore.\n"
-            "- Manter token e URL configurados na própria tela.\n"
-            "- Usar Status/Retomar após conflito sem abrir terminal.",
+            "- Ajustar as branches de origem e destino sem abrir terminal.\n"
+            "- Abrir a pasta do ultimo run sem navegar na arvore.\n"
+            "- Manter token e URL configurados na propria tela.\n"
+            "- Usar Status/Retomar apos conflito sem abrir terminal.",
             justify="left",
         ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(18, 0))
 
@@ -216,7 +220,7 @@ class EqualizadorPromaxApp:
         return frame
 
     def _select_repo(self) -> None:
-        selected = filedialog.askdirectory(title="Selecione o repositório Git")
+        selected = filedialog.askdirectory(title="Selecione o repositorio Git")
         if selected:
             self.repo_var.set(selected)
             self._save_ui_state()
@@ -242,17 +246,16 @@ class EqualizadorPromaxApp:
         try:
             timeout = int(self.timeout_var.get().strip() or "15")
         except ValueError:
-            messagebox.showerror("Configuração inválida", "O timeout precisa ser numérico.")
+            messagebox.showerror("Configuracao invalida", "O timeout precisa ser numerico.")
             return False
 
         config_path = default_config_path()
-        credential_account = GUI_SECRET_ACCOUNT
         settings = JiraSettings(
             base_url=self.base_url_var.get().strip(),
             auth_mode=self.auth_mode_var.get().strip(),
             username=self.username_var.get().strip() or None,
             credential_service="equalizador-promax/jira",
-            credential_account=credential_account,
+            credential_account=GUI_SECRET_ACCOUNT,
             timeout_seconds=timeout,
         )
         config = AppConfig(jira=settings, config_path=config_path)
@@ -270,33 +273,42 @@ class EqualizadorPromaxApp:
             return False
 
         if show_success:
-            messagebox.showinfo("Configuração salva", f"Configuração Jira salva em:\n{saved_path}")
+            messagebox.showinfo("Configuracao salva", f"Configuracao Jira salva em:\n{saved_path}")
         return True
 
     def _run_doctor(self) -> None:
         repo = self._require_repo()
         if not repo:
             return
+        source_ref, target_ref = self._require_refs()
+        if not source_ref or not target_ref:
+            return
         if not self._persist_configuration():
             return
-        self._launch_cli(["doctor", "--repo", repo], "Executando doctor...")
+        self._launch_cli(
+            ["doctor", "--repo", repo, "--source-ref", source_ref, "--target-ref", target_ref],
+            "Executando doctor...",
+        )
 
     def _run_equalization(self) -> None:
         repo = self._require_repo()
         if not repo:
             return
+        source_ref, target_ref = self._require_refs()
+        if not source_ref or not target_ref:
+            return
 
-        command = ["run", "--repo", repo]
+        command = ["run", "--repo", repo, "--source-ref", source_ref, "--target-ref", target_ref]
         if self.input_mode_var.get() == "release":
             release_id = self.release_id_var.get().strip()
             if not release_id:
-                messagebox.showerror("Campo obrigatório", "Informe o Release ID.")
+                messagebox.showerror("Campo obrigatorio", "Informe o Release ID.")
                 return
             command.extend(["--release-id", release_id])
         else:
             stories = self.stories_var.get().strip()
             if not stories:
-                messagebox.showerror("Campo obrigatório", "Informe as stories manualmente.")
+                messagebox.showerror("Campo obrigatorio", "Informe as stories manualmente.")
                 return
             command.extend(["--stories", stories])
         if self.force_now_var.get():
@@ -305,7 +317,7 @@ class EqualizadorPromaxApp:
         self._save_ui_state()
         if not self._persist_configuration():
             return
-        self._launch_cli(command, "Iniciando equalização...")
+        self._launch_cli(command, "Iniciando equalizacao...")
 
     def _resume_run(self) -> None:
         repo = self._require_repo()
@@ -313,7 +325,7 @@ class EqualizadorPromaxApp:
             return
         if not self._persist_configuration():
             return
-        self._launch_cli(["resume", "--repo", repo], "Retomando execução pausada...")
+        self._launch_cli(["resume", "--repo", repo], "Retomando execucao pausada...")
 
     def _show_status(self) -> None:
         repo = self._require_repo()
@@ -326,12 +338,12 @@ class EqualizadorPromaxApp:
     def _open_latest_run_folder(self) -> None:
         repo = self.repo_var.get().strip()
         if not repo:
-            messagebox.showerror("Campo obrigatório", "Selecione o repositório.")
+            messagebox.showerror("Campo obrigatorio", "Selecione o repositorio.")
             return
 
         runs_root = Path(repo) / ".git" / "equalizador-promax" / "runs"
         if not runs_root.exists():
-            messagebox.showerror("Pasta não encontrada", f"Nenhum run encontrado em:\n{runs_root}")
+            messagebox.showerror("Pasta nao encontrada", f"Nenhum run encontrado em:\n{runs_root}")
             return
 
         manifest_paths = sorted(runs_root.glob("**/manifest.json"), key=lambda item: item.stat().st_mtime, reverse=True)
@@ -342,11 +354,11 @@ class EqualizadorPromaxApp:
         self.output_text.configure(state="normal")
         self.output_text.delete("1.0", tk.END)
         self.output_text.configure(state="disabled")
-        self.status_var.set("Saída limpa.")
+        self.status_var.set("Saida limpa.")
 
     def _launch_cli(self, command_args: list[str], status_message: str) -> None:
         if self.process and self.process.poll() is None:
-            messagebox.showwarning("Execução em andamento", "Já existe um processo em execução.")
+            messagebox.showwarning("Execucao em andamento", "Ja existe um processo em execucao.")
             return
 
         self.status_var.set(status_message)
@@ -378,8 +390,8 @@ class EqualizadorPromaxApp:
         for line in self.process.stdout or []:
             self.output_queue.put(("line", line))
         return_code = self.process.wait()
-        self.output_queue.put(("line", f"\n[processo finalizado com código {return_code}]\n"))
-        status_message = "Execução concluída." if return_code == 0 else f"Execução finalizada com código {return_code}."
+        self.output_queue.put(("line", f"\n[processo finalizado com codigo {return_code}]\n"))
+        status_message = "Execucao concluida." if return_code == 0 else f"Execucao finalizada com codigo {return_code}."
         self.output_queue.put(("status", status_message))
 
     def _poll_output_queue(self) -> None:
@@ -403,9 +415,20 @@ class EqualizadorPromaxApp:
     def _require_repo(self) -> str | None:
         repo = self.repo_var.get().strip()
         if not repo:
-            messagebox.showerror("Campo obrigatório", "Selecione o repositório.")
+            messagebox.showerror("Campo obrigatorio", "Selecione o repositorio.")
             return None
         return repo
+
+    def _require_refs(self) -> tuple[str | None, str | None]:
+        source_ref = self.source_ref_var.get().strip()
+        target_ref = self.target_ref_var.get().strip()
+        if not source_ref:
+            messagebox.showerror("Campo obrigatorio", "Informe a branche origem.")
+            return None, None
+        if not target_ref:
+            messagebox.showerror("Campo obrigatorio", "Informe a branche destino.")
+            return None, None
+        return source_ref, target_ref
 
     def _load_initial_state(self) -> None:
         try:
@@ -425,6 +448,8 @@ class EqualizadorPromaxApp:
         self.release_id_var.set(state.get("release_id", ""))
         self.stories_var.set(state.get("stories", ""))
         self.force_now_var.set(bool(state.get("force_now", False)))
+        self.source_ref_var.set(state.get("source_ref", "origin/develop"))
+        self.target_ref_var.set(state.get("target_ref", "origin/quality"))
         secret_path = global_secret_path()
         if secret_path.exists():
             try:
@@ -454,6 +479,8 @@ class EqualizadorPromaxApp:
             "release_id": self.release_id_var.get().strip(),
             "stories": self.stories_var.get().strip(),
             "force_now": self.force_now_var.get(),
+            "source_ref": self.source_ref_var.get().strip(),
+            "target_ref": self.target_ref_var.get().strip(),
         }
         path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 

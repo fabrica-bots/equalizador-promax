@@ -24,7 +24,13 @@ class EqualizadorService:
         self.config = config or load_config()
         self.jira = JiraClient(self.config.jira)
 
-    def doctor(self, repo_path: Path) -> list[DoctorCheck]:
+    def doctor(
+        self,
+        repo_path: Path,
+        *,
+        source_ref: str = "origin/develop",
+        target_ref: str = "origin/quality",
+    ) -> list[DoctorCheck]:
         checks: list[DoctorCheck] = []
 
         try:
@@ -41,7 +47,7 @@ class EqualizadorService:
             checks.append(DoctorCheck(name="git-repo", ok=False, details=str(exc)))
             return checks
 
-        for ref_name in ("develop", "origin/quality"):
+        for ref_name in (source_ref, target_ref):
             try:
                 git.ensure_ref_exists(ref_name)
                 checks.append(DoctorCheck(name=f"git-ref:{ref_name}", ok=True, details=f"Ref {ref_name} acessivel."))
@@ -89,6 +95,8 @@ class EqualizadorService:
         force_new: bool = False,
         release_id: str | None = None,
         release_name: str | None = None,
+        source_ref: str = "origin/develop",
+        target_ref: str = "origin/quality",
     ) -> RunManifest:
         normalized_stories = normalize_story_keys(story_keys)
         if not normalized_stories:
@@ -96,13 +104,18 @@ class EqualizadorService:
 
         git = GitAdapter(repo_path)
         git.fetch_origin()
-        git.ensure_ref_exists("develop")
-        git.ensure_ref_exists("origin/quality")
+        git.ensure_ref_exists(source_ref)
+        git.ensure_ref_exists(target_ref)
         git.ensure_clean_working_tree()
 
         store = RunStore(git.state_root())
         store.ensure_writable()
-        fingerprint = calculate_fingerprint(git.repo_root, normalized_stories)
+        fingerprint = calculate_fingerprint(
+            git.repo_root,
+            normalized_stories,
+            source_ref=source_ref,
+            target_ref=target_ref,
+        )
         existing = store.find_open_run(fingerprint)
         if existing and not force_new:
             raise InconsistentStateError(
@@ -134,6 +147,8 @@ class EqualizadorService:
             conflict_count=0,
             created_at=utc_now_iso(),
             updated_at=utc_now_iso(),
+            source_ref=source_ref,
+            target_ref=target_ref,
         )
         store.create_run(manifest)
         journal = store.journal(run_id)
@@ -141,7 +156,7 @@ class EqualizadorService:
 
         items_payload: dict[str, object] | None = None
         try:
-            items_payload, commit_plan = self._build_execution_plan(normalized_stories, git, journal)
+            items_payload, commit_plan = self._build_execution_plan(normalized_stories, git, journal, source_ref=source_ref)
             manifest.total_commits = len(commit_plan)
             store.write_items(run_id, items_payload)
             journal.record(
@@ -152,10 +167,10 @@ class EqualizadorService:
                 result="ok",
             )
 
-            git.create_equalization_branch(manifest.branch_name)
+            git.create_equalization_branch(manifest.branch_name, base_ref=target_ref)
             journal.record(
                 "info",
-                f"Created branch {manifest.branch_name} from origin/quality.",
+                f"Created branch {manifest.branch_name} from {target_ref}.",
                 phase="branching",
                 action="branch-create",
                 result="ok",
@@ -260,6 +275,8 @@ class EqualizadorService:
             f"Status: {manifest.status}",
             f"Phase: {manifest.phase}",
             f"Branch: {manifest.branch_name}",
+            f"Source Ref: {manifest.source_ref}",
+            f"Target Ref: {manifest.target_ref}",
             f"Release ID: {manifest.release_id or '-'}",
             f"Release Name: {manifest.release_name or '-'}",
             f"Stories: {', '.join(manifest.input_stories)}",
@@ -282,6 +299,8 @@ class EqualizadorService:
         story_keys: list[str],
         git: GitAdapter,
         journal: ExecutionJournal,
+        *,
+        source_ref: str,
     ) -> tuple[dict[str, object], list[CandidateCommit]]:
         story_items: list[JiraItem] = []
         subtasks: list[JiraItem] = []
@@ -300,7 +319,7 @@ class EqualizadorService:
 
         eligible_items = consolidate_items(story_keys, story_items, subtasks)
         eligible_item_keys = {item.key for item in eligible_items}
-        merges = git.collect_merges("develop")
+        merges = git.collect_merges(source_ref)
 
         raw_candidates: list[CandidateCommit] = []
         matched_item_keys: set[str] = set()
@@ -426,6 +445,8 @@ class EqualizadorService:
             "",
             f"- Status: {manifest.status}",
             f"- Branch: {manifest.branch_name}",
+            f"- Origem: {manifest.source_ref}",
+            f"- Destino: {manifest.target_ref}",
             f"- Release ID: {manifest.release_id or '-'}",
             f"- Release Name: {manifest.release_name or '-'}",
             f"- Stories de entrada: {stats.get('input_story_count', len(manifest.input_stories))}",
@@ -447,6 +468,8 @@ class EqualizadorService:
         return (
             f"Run: {manifest.run_id}\n"
             f"Branch: {manifest.branch_name}\n"
+            f"Origem: {manifest.source_ref}\n"
+            f"Destino: {manifest.target_ref}\n"
             f"Commit em conflito: {commit_hash}\n\n"
             "Passos sugeridos:\n"
             "1. Resolva os arquivos conflitados.\n"

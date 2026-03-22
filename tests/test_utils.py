@@ -20,6 +20,11 @@ class UtilsTests(unittest.TestCase):
         second = calculate_fingerprint(Path("C:/repo"), ["SQCRM-1", "SQCRM-2", "SQCRM-2"])
         self.assertEqual(first, second)
 
+    def test_calculate_fingerprint_changes_when_refs_change(self) -> None:
+        first = calculate_fingerprint(Path("C:/repo"), ["SQCRM-1"], source_ref="origin/develop", target_ref="origin/quality")
+        second = calculate_fingerprint(Path("C:/repo"), ["SQCRM-1"], source_ref="origin/release", target_ref="origin/quality")
+        self.assertNotEqual(first, second)
+
     def test_extract_issue_keys(self) -> None:
         self.assertEqual(
             extract_issue_keys("Merge PR 9 - SQCRM-10 com AJUSTE-4"),

@@ -73,6 +73,8 @@ class RunManifest:
     conflict_count: int
     created_at: str
     updated_at: str
+    source_ref: str = "origin/develop"
+    target_ref: str = "origin/quality"
     paused_reason: str | None = None
     conflict_commit: str | None = None
     last_error: str | None = None
@@ -87,6 +89,8 @@ class RunManifest:
             repo_path=payload["repo_path"],
             repo_slug=payload["repo_slug"],
             branch_name=payload["branch_name"],
+            source_ref=payload.get("source_ref", "origin/develop"),
+            target_ref=payload.get("target_ref", "origin/quality"),
             input_stories=list(payload["input_stories"]),
             release_id=payload.get("release_id"),
             release_name=payload.get("release_name"),

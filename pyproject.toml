@@ -13,8 +13,14 @@ dependencies = [
   "keyring>=25.0.0",
 ]
 
+[project.optional-dependencies]
+build = [
+  "pyinstaller>=6.0.0",
+]
+
 [project.scripts]
 equalizador-promax = "equalizador_promax.cli:main"
+equalizador-promax-gui = "equalizador_promax.gui:launch_gui"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/equalizador_promax"]

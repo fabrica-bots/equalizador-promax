@@ -19,9 +19,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor_parser = subparsers.add_parser("doctor", help="Valida ambiente e dependencias.")
     doctor_parser.add_argument("--repo", type=Path, required=True, help="Caminho do repositorio Git local.")
+    doctor_parser.add_argument(
+        "--source-ref",
+        default="origin/develop",
+        help="Ref/branche origem para buscar merges e commits. Default: origin/develop",
+    )
+    doctor_parser.add_argument(
+        "--target-ref",
+        default="origin/quality",
+        help="Ref/branche destino usada como base da equalizacao. Default: origin/quality",
+    )
 
     run_parser = subparsers.add_parser("run", help="Inicia uma equalizacao.")
     run_parser.add_argument("--repo", type=Path, required=True, help="Caminho do repositorio Git local.")
+    run_parser.add_argument(
+        "--source-ref",
+        default="origin/develop",
+        help="Ref/branche origem para buscar merges e commits. Default: origin/develop",
+    )
+    run_parser.add_argument(
+        "--target-ref",
+        default="origin/quality",
+        help="Ref/branche destino usada como base da equalizacao. Default: origin/quality",
+    )
     run_input_group = run_parser.add_mutually_exclusive_group(required=True)
     run_input_group.add_argument(
         "--stories",
@@ -61,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.command == "doctor":
-            checks = service.doctor(args.repo)
+            checks = service.doctor(args.repo, source_ref=args.source_ref, target_ref=args.target_ref)
             for check in checks:
                 marker = "[OK]" if check.ok else "[ERRO]"
                 print(f"{marker} {check.name}: {check.details}")
@@ -82,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
                 force_new=args.force_new,
                 release_id=args.release_id,
                 release_name=release_name,
+                source_ref=args.source_ref,
+                target_ref=args.target_ref,
             )
             print(f"Run {manifest.run_id} finalized with status {manifest.status}.")
             return 0

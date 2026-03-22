@@ -24,9 +24,15 @@ def generate_run_id(repo_name: str, now: datetime | None = None) -> str:
     return f"{instant.strftime('%Y%m%d-%H%M%S')}-{slugify_repo_name(repo_name)}"
 
 
-def calculate_fingerprint(repo_path: Path, story_keys: Iterable[str]) -> str:
+def calculate_fingerprint(
+    repo_path: Path,
+    story_keys: Iterable[str],
+    *,
+    source_ref: str = "origin/develop",
+    target_ref: str = "origin/quality",
+) -> str:
     normalized = [key.strip().upper() for key in story_keys if key.strip()]
-    material = f"{repo_path.resolve()}|{','.join(sorted(set(normalized)))}"
+    material = f"{repo_path.resolve()}|{source_ref}|{target_ref}|{','.join(sorted(set(normalized)))}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
