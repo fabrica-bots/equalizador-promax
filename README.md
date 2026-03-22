@@ -179,7 +179,7 @@ Prerequisitos da maquina que vai gerar o pacote:
 - pip
 - Inno Setup com `ISCC` disponivel no `PATH`
 
-Passo a passo:
+Passo a passo :
 
 ```powershell
 git clone <repo>
