@@ -1,4 +1,4 @@
-# Architecture Brief
+# Architecture Brief 
 
 ## 1. Identificação da Demanda
 - **Título:** Equalizador ProMax
