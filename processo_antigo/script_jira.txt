@@ -1,0 +1,41 @@
+// IDs das estórias separadas por ";"
+let issueKeys = ['SQCRM-6805',
+'SQCRM-6806',
+'SQCRM-6823',
+'SQCRM-6824',
+'SQCRM-6825',
+'SQCRM-6831',
+'SQCRM-6836',
+'SQCRM-7027',
+'SQCRM-6604',
+'SQCRM-6811']
+let jiraBaseUrl = 'https://agile.corp.edp.pt/rest/api/2/issue/';
+issueKeys.forEach(issueKey => {
+    let url = `${jiraBaseUrl}${issueKey}`;    
+    fetch(url, {
+        method: 'GET',
+        headers: {
+            'Accept': 'application/json',            
+            'Content-Type': 'application/json',
+        }
+    })
+    .then(response => {
+        if (!response.ok) {
+            throw new Error(`Erro ao buscar a estória ${issueKey}`);
+        }
+        return response.json();
+    })
+    .then(data => {
+        console.log(data.key);        
+        let subtasks = data.fields.subtasks;
+        
+		if (subtasks && subtasks.length > 0) {			
+            subtasks.forEach(subtask => {
+				console.log(subtask.key);
+            });
+        }		
+    })
+    .catch(error => {
+        console.error('Erro ao acessar a API do Jira:', error);
+    });
+});
