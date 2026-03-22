@@ -26,6 +26,10 @@ def global_secret_path() -> Path:
     return global_state_dir() / "gui-secret.txt"
 
 
+def is_frozen_app() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
 class EqualizadorPromaxApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -365,17 +369,21 @@ class EqualizadorPromaxApp:
         config_args = ["--config", str(default_config_path())]
         self._sync_secret_to_runtime_store()
 
-        self._append_output(
-            f"$ {' '.join([sys.executable, '-m', 'equalizador_promax', *config_args, *command_args])}\n"
-        )
-
         env = os.environ.copy()
-        package_parent = Path(__file__).resolve().parents[1]
-        current_pythonpath = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = str(package_parent) if not current_pythonpath else f"{package_parent}{os.pathsep}{current_pythonpath}"
+        if is_frozen_app():
+            launch_command = [sys.executable, *config_args, *command_args]
+        else:
+            package_parent = Path(__file__).resolve().parents[1]
+            current_pythonpath = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = (
+                str(package_parent) if not current_pythonpath else f"{package_parent}{os.pathsep}{current_pythonpath}"
+            )
+            launch_command = [sys.executable, "-m", "equalizador_promax", *config_args, *command_args]
+
+        self._append_output(f"$ {' '.join(launch_command)}\n")
 
         self.process = subprocess.Popen(
-            [sys.executable, "-m", "equalizador_promax", *config_args, *command_args],
+            launch_command,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -445,8 +453,8 @@ class EqualizadorPromaxApp:
         state = self._load_ui_state()
         self.repo_var.set(state.get("repo_path", ""))
         self.input_mode_var.set(state.get("input_mode", "release"))
-        self.release_id_var.set(state.get("release_id", ""))
-        self.stories_var.set(state.get("stories", ""))
+        self.release_id_var.set("")
+        self.stories_var.set("")
         self.force_now_var.set(bool(state.get("force_now", False)))
         self.source_ref_var.set(state.get("source_ref", "origin/develop"))
         self.target_ref_var.set(state.get("target_ref", "origin/quality"))
@@ -476,8 +484,6 @@ class EqualizadorPromaxApp:
         payload = {
             "repo_path": self.repo_var.get().strip(),
             "input_mode": self.input_mode_var.get().strip(),
-            "release_id": self.release_id_var.get().strip(),
-            "stories": self.stories_var.get().strip(),
             "force_now": self.force_now_var.get(),
             "source_ref": self.source_ref_var.get().strip(),
             "target_ref": self.target_ref_var.get().strip(),

@@ -1,5 +1,5 @@
 #define MyAppName "Equalizador ProMax"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.1.3"
 #define MyAppPublisher "FabricaBots"
 #define MyAppExeName "EqualizadorProMax.exe"
 #define MyAppExePath "..\dist\EqualizadorProMax.exe"
