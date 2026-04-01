@@ -1,20 +1,22 @@
 from __future__ import annotations
 
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 from equalizador_promax.config import AppConfig, load_config
 from equalizador_promax.correlation import (
     consolidate_items,
     deduplicate_commits,
     find_unmatched_item_keys,
-    match_merge_to_item,
+    match_merge_to_items,
+    normalize_release_ids,
     normalize_story_keys,
 )
 from equalizador_promax.errors import ConflictPauseError, InconsistentStateError, ValidationError
 from equalizador_promax.git_adapter import GitAdapter
 from equalizador_promax.jira_client import JiraClient
-from equalizador_promax.models import CandidateCommit, DoctorCheck, JiraItem, RunManifest
+from equalizador_promax.models import CandidateCommit, DoctorCheck, JiraItem, ReleaseReference, RunManifest
 from equalizador_promax.run_store import ExecutionJournal, RunStore
 from equalizador_promax.utils import build_release_branch_name, calculate_fingerprint, generate_run_id, utc_now_iso
 
@@ -91,6 +93,35 @@ class EqualizadorService:
         self,
         repo_path: Path,
         story_keys: list[str],
+        release_refs: list[ReleaseReference] | None = None,
+        story_release_map: dict[str, list[ReleaseReference]] | None = None,
+        *,
+        force_new: bool = False,
+        release_id: str | None = None,
+        release_name: str | None = None,
+        source_ref: str = "origin/develop",
+        target_ref: str = "origin/quality",
+    ) -> RunManifest:
+        manifest = self.capture_jira_snapshot(
+            repo_path,
+            story_keys,
+            release_refs=release_refs,
+            story_release_map=story_release_map,
+            force_new=force_new,
+            release_id=release_id,
+            release_name=release_name,
+            source_ref=source_ref,
+            target_ref=target_ref,
+        )
+        manifest = self.fetch_commits(repo_path, manifest.run_id)
+        return self.apply_cherry_picks(repo_path, manifest.run_id)
+
+    def capture_jira_snapshot(
+        self,
+        repo_path: Path,
+        story_keys: list[str],
+        release_refs: list[ReleaseReference] | None = None,
+        story_release_map: dict[str, list[ReleaseReference]] | None = None,
         *,
         force_new: bool = False,
         release_id: str | None = None,
@@ -102,12 +133,12 @@ class EqualizadorService:
         if not normalized_stories:
             raise ValidationError("At least one story key must be informed.")
 
-        git = GitAdapter(repo_path)
-        git.fetch_origin()
-        git.ensure_ref_exists(source_ref)
-        git.ensure_ref_exists(target_ref)
-        git.ensure_clean_working_tree()
+        normalized_release_refs = list(release_refs or [])
+        normalized_story_release_map = {key: list(references) for key, references in (story_release_map or {}).items()}
+        release_id = release_id or ",".join(reference.release_id for reference in normalized_release_refs) or None
+        release_name = release_name or ", ".join(reference.release_name for reference in normalized_release_refs) or None
 
+        git = GitAdapter(repo_path)
         store = RunStore(git.state_root())
         store.ensure_writable()
         fingerprint = calculate_fingerprint(
@@ -119,80 +150,217 @@ class EqualizadorService:
         existing = store.find_open_run(fingerprint)
         if existing and not force_new:
             raise InconsistentStateError(
-                f"Existing unfinished run detected ({existing.run_id}). Use resume or --force-new."
+                f"Existing unfinished run detected ({existing.run_id}). Use discard/resume or --force-new."
             )
 
-        run_started_at = datetime.now()
-        generated_run_id = generate_run_id(git.repo_root.name, now=run_started_at)
-        branch_name = (
-            build_release_branch_name(release_name, now=run_started_at)
-            if release_name
-            else f"equalizacao/{generated_run_id}"
-        )
-        run_id = branch_name
-        manifest = RunManifest(
-            run_id=run_id,
-            repo_path=str(git.repo_root),
-            repo_slug=git.repo_root.name,
-            branch_name=branch_name,
-            input_stories=normalized_stories,
+        manifest = self._create_manifest(
+            git,
+            store,
+            normalized_stories,
+            normalized_release_refs,
             release_id=release_id,
             release_name=release_name,
             fingerprint=fingerprint,
-            status="initializing",
-            phase="starting",
-            current_commit_index=0,
-            total_commits=0,
-            applied_commit_count=0,
-            conflict_count=0,
-            created_at=utc_now_iso(),
-            updated_at=utc_now_iso(),
             source_ref=source_ref,
             target_ref=target_ref,
         )
-        store.create_run(manifest)
-        journal = store.journal(run_id)
-        journal.record("info", "Starting equalization run.", phase="starting", action="run-start", result="ok")
+        journal = store.journal(manifest.run_id)
+        journal.record("info", "Starting Jira snapshot capture.", phase="jira", action="jira-start", result="ok")
 
-        items_payload: dict[str, object] | None = None
+        items_payload: dict[str, Any] | None = None
         try:
-            items_payload, commit_plan = self._build_execution_plan(normalized_stories, git, journal, source_ref=source_ref)
-            manifest.total_commits = len(commit_plan)
-            store.write_items(run_id, items_payload)
+            items_payload = self._build_jira_snapshot(
+                normalized_stories,
+                journal,
+                story_release_map=normalized_story_release_map,
+            )
+            store.replace_items(manifest.run_id, items_payload)
+            manifest.status = "jira-ready"
+            manifest.phase = "jira-ready"
+            manifest.last_error = None
+            store.write_manifest(manifest)
+            store.write_summary(manifest.run_id, self._render_summary(manifest, items_payload))
             journal.record(
                 "info",
-                f"Execution plan assembled with {len(commit_plan)} distinct commits.",
-                phase="planning",
-                action="plan",
+                f"Jira snapshot captured with {items_payload['stats']['eligible_item_count']} eligible items.",
+                phase="jira",
+                action="jira-finish",
                 result="ok",
             )
+            return manifest
+        except Exception as exc:
+            self._mark_failed(store, manifest, items_payload, exc)
+            raise
 
-            git.create_equalization_branch(manifest.branch_name, base_ref=target_ref)
+    def fetch_commits(self, repo_path: Path, run_id: str | None = None) -> RunManifest:
+        git = GitAdapter(repo_path)
+        manifest, store, items_payload = self._load_manifest_with_items(git, run_id)
+
+        if git.is_cherry_pick_in_progress():
+            raise InconsistentStateError(
+                "A cherry-pick is in progress. Use resume or discard the current branch before recalculating commits."
+            )
+        if git.branch_exists(manifest.branch_name):
+            raise InconsistentStateError(
+                f"Branch {manifest.branch_name} already exists. Discard the current branch before recalculating commits."
+            )
+
+        git.fetch_origin()
+        git.ensure_ref_exists(manifest.source_ref)
+
+        journal = store.journal(manifest.run_id)
+        journal.record("info", "Starting commit discovery from cached Jira items.", phase="planning", action="plan-start", result="ok")
+
+        try:
+            items_payload, commit_plan = self._build_commit_plan(
+                items_payload,
+                git,
+                journal,
+                source_ref=manifest.source_ref,
+            )
+            manifest.total_commits = len(commit_plan)
+            manifest.current_commit_index = 0
+            manifest.applied_commit_count = 0
+            manifest.conflict_count = 0
+            manifest.status = "commits-ready"
+            manifest.phase = "commits-ready"
+            manifest.paused_reason = None
+            manifest.conflict_commit = None
+            manifest.last_error = None
+            store.replace_items(manifest.run_id, items_payload)
+            store.write_manifest(manifest)
+            store.write_summary(manifest.run_id, self._render_summary(manifest, items_payload))
             journal.record(
                 "info",
-                f"Created branch {manifest.branch_name} from {target_ref}.",
+                f"Commit discovery finished with {len(commit_plan)} distinct commits.",
+                phase="planning",
+                action="plan-finish",
+                result="ok",
+            )
+            return manifest
+        except Exception as exc:
+            self._mark_failed(store, manifest, items_payload, exc)
+            raise
+
+    def apply_cherry_picks(self, repo_path: Path, run_id: str | None = None) -> RunManifest:
+        git = GitAdapter(repo_path)
+        manifest, store, items_payload = self._load_manifest_with_items(git, run_id)
+        commit_plan = [CandidateCommit.from_dict(item) for item in items_payload.get("commits", [])]
+        if not commit_plan:
+            raise InconsistentStateError("No commit list captured for this run. Execute fetch-commits first.")
+        if manifest.status == "paused":
+            raise InconsistentStateError(f"Run {manifest.run_id} is paused. Use resume or discard the current branch first.")
+        if manifest.phase != "commits-ready":
+            raise InconsistentStateError(
+                f"Run {manifest.run_id} is not ready for cherry-picks. Execute fetch-commits before applying."
+            )
+        if git.is_cherry_pick_in_progress():
+            raise InconsistentStateError("A cherry-pick is already in progress. Use resume or discard the current branch.")
+
+        git.fetch_origin()
+        git.ensure_ref_exists(manifest.target_ref)
+        git.ensure_clean_working_tree()
+
+        journal = store.journal(manifest.run_id)
+        try:
+            git.create_equalization_branch(manifest.branch_name, base_ref=manifest.target_ref)
+            journal.record(
+                "info",
+                f"Created branch {manifest.branch_name} from {manifest.target_ref}.",
                 phase="branching",
                 action="branch-create",
                 result="ok",
             )
             manifest.status = "running"
             manifest.phase = "applying"
+            manifest.current_commit_index = 0
+            manifest.applied_commit_count = 0
+            manifest.conflict_count = 0
+            manifest.paused_reason = None
+            manifest.conflict_commit = None
+            manifest.last_error = None
+            items_payload = store.reset_commit_statuses(manifest.run_id)
             store.write_manifest(manifest)
             return self._apply_commit_plan(store, journal, git, manifest, commit_plan, items_payload)
         except Exception as exc:
-            if manifest.status != "paused":
-                manifest.status = "failed"
-                manifest.phase = "failed"
-                manifest.last_error = str(exc)
-                store.write_manifest(manifest)
-                store.write_summary(manifest.run_id, self._render_summary(manifest, items_payload))
+            self._mark_failed(store, manifest, items_payload, exc)
             raise
+
+    def discard_current_branch(self, repo_path: Path, run_id: str | None = None) -> RunManifest:
+        git = GitAdapter(repo_path)
+        manifest, store, items_payload = self._load_manifest_with_items(git, run_id)
+        commit_plan = [CandidateCommit.from_dict(item) for item in items_payload.get("commits", [])]
+        if not commit_plan:
+            raise InconsistentStateError("No commit list captured for this run. Execute fetch-commits before discarding.")
+
+        journal = store.journal(manifest.run_id)
+        git.ensure_ref_exists(manifest.source_ref)
+        git.cherry_pick_abort()
+        current_branch = git.current_branch_name()
+        if current_branch == manifest.branch_name:
+            git.switch(git.resolve_switch_target(manifest.source_ref))
+        if git.branch_exists(manifest.branch_name):
+            git.delete_branch(manifest.branch_name)
+
+        items_payload = store.reset_commit_statuses(manifest.run_id)
+        manifest.status = "commits-ready"
+        manifest.phase = "commits-ready"
+        manifest.current_commit_index = 0
+        manifest.applied_commit_count = 0
+        manifest.conflict_count = 0
+        manifest.paused_reason = None
+        manifest.conflict_commit = None
+        manifest.last_error = None
+        store.write_manifest(manifest)
+        store.write_summary(manifest.run_id, self._render_summary(manifest, items_payload))
+        journal.record(
+            "info",
+            f"Discarded branch {manifest.branch_name} and returned to {manifest.source_ref}.",
+            phase="discard",
+            action="branch-discard",
+            result="ok",
+        )
+        return manifest
 
     def resolve_story_keys(self, story_keys: list[str] | None = None) -> list[str]:
         normalized = normalize_story_keys(story_keys or [])
         if not normalized:
             raise ValidationError("At least one story key must be informed.")
         return normalized
+
+    def resolve_inputs(
+        self,
+        release_ids: list[str] | None = None,
+        story_keys: list[str] | None = None,
+    ) -> tuple[list[str], list[ReleaseReference], dict[str, list[ReleaseReference]]]:
+        normalized_release_ids = normalize_release_ids(release_ids or [])
+        normalized_manual_stories = normalize_story_keys(story_keys or [])
+        if not normalized_release_ids and not normalized_manual_stories:
+            raise ValidationError("At least one release id or story key must be informed.")
+
+        combined_story_keys: list[str] = []
+        seen_story_keys: set[str] = set()
+        release_refs: list[ReleaseReference] = []
+        story_release_map: dict[str, list[ReleaseReference]] = {}
+
+        for release_id in normalized_release_ids:
+            release_story_keys, release_name = self.resolve_release(release_id)
+            release_ref = ReleaseReference(release_id=release_id, release_name=release_name)
+            release_refs.append(release_ref)
+            for story_key in release_story_keys:
+                story_release_map.setdefault(story_key, []).append(release_ref)
+                if story_key in seen_story_keys:
+                    continue
+                combined_story_keys.append(story_key)
+                seen_story_keys.add(story_key)
+
+        for story_key in normalized_manual_stories:
+            if story_key in seen_story_keys:
+                continue
+            combined_story_keys.append(story_key)
+            seen_story_keys.add(story_key)
+
+        return combined_story_keys, release_refs, story_release_map
 
     def resolve_release(self, release_id: str) -> tuple[list[str], str]:
         release_name = self.jira.fetch_release_name(release_id)
@@ -277,8 +445,8 @@ class EqualizadorService:
             f"Branch: {manifest.branch_name}",
             f"Source Ref: {manifest.source_ref}",
             f"Target Ref: {manifest.target_ref}",
-            f"Release ID: {manifest.release_id or '-'}",
-            f"Release Name: {manifest.release_name or '-'}",
+            f"Release IDs: {manifest.release_id or '-'}",
+            f"Release Names: {manifest.release_name or '-'}",
             f"Stories: {', '.join(manifest.input_stories)}",
             f"Applied commits: {manifest.applied_commit_count}/{manifest.total_commits}",
             f"Conflicts: {manifest.conflict_count}",
@@ -294,19 +462,85 @@ class EqualizadorService:
         lines.append(f"Artifacts: {store.run_dir(manifest.run_id)}")
         return "\n".join(lines)
 
-    def _build_execution_plan(
+    def _create_manifest(
+        self,
+        git: GitAdapter,
+        store: RunStore,
+        story_keys: list[str],
+        release_refs: list[ReleaseReference],
+        *,
+        release_id: str | None,
+        release_name: str | None,
+        fingerprint: str,
+        source_ref: str,
+        target_ref: str,
+    ) -> RunManifest:
+        run_started_at = datetime.now()
+        generated_run_id = generate_run_id(git.repo_root.name, now=run_started_at)
+        branch_release_name = (
+            release_refs[0].release_name if len(release_refs) == 1 else release_name if not release_refs else None
+        )
+        branch_name = (
+            build_release_branch_name(branch_release_name, now=run_started_at)
+            if branch_release_name
+            else f"equalizacao/{generated_run_id}"
+        )
+        manifest = RunManifest(
+            run_id=branch_name,
+            repo_path=str(git.repo_root),
+            repo_slug=git.repo_root.name,
+            branch_name=branch_name,
+            input_stories=story_keys,
+            release_id=release_id,
+            release_name=release_name,
+            fingerprint=fingerprint,
+            status="initializing",
+            phase="starting",
+            current_commit_index=0,
+            total_commits=0,
+            applied_commit_count=0,
+            conflict_count=0,
+            created_at=utc_now_iso(),
+            updated_at=utc_now_iso(),
+            source_ref=source_ref,
+            target_ref=target_ref,
+        )
+        store.create_run(manifest)
+        return manifest
+
+    def _load_manifest_with_items(
+        self,
+        git: GitAdapter,
+        run_id: str | None,
+    ) -> tuple[RunManifest, RunStore, dict[str, Any]]:
+        store = RunStore(git.state_root())
+        manifest = store.load_manifest(run_id) if run_id else store.load_latest_manifest()
+        if manifest is None:
+            raise InconsistentStateError("No recorded runs found for this repository.")
+        items_path = store.run_dir(manifest.run_id) / "items.json"
+        if not items_path.exists():
+            raise InconsistentStateError(f"Run {manifest.run_id} has no cached items. Execute fetch-jira first.")
+        items_payload = store.load_items(manifest.run_id)
+        return manifest, store, items_payload
+
+    def _build_jira_snapshot(
         self,
         story_keys: list[str],
-        git: GitAdapter,
         journal: ExecutionJournal,
         *,
-        source_ref: str,
-    ) -> tuple[dict[str, object], list[CandidateCommit]]:
+        story_release_map: dict[str, list[ReleaseReference]] | None = None,
+    ) -> dict[str, Any]:
+        normalized_story_release_map = story_release_map or {}
+        story_results = self.jira.fetch_stories_with_subtasks(story_keys)
+
         story_items: list[JiraItem] = []
+        story_payloads: list[dict[str, Any]] = []
         subtasks: list[JiraItem] = []
-        for story_key in story_keys:
-            story_item, story_subtasks = self.jira.fetch_story_with_subtasks(story_key)
+        for story_key, (story_item, story_subtasks) in zip(story_keys, story_results, strict=True):
             story_items.append(story_item)
+            story_payloads.append(
+                self._build_story_payload(story_item, normalized_story_release_map.get(story_item.key, []))
+            )
             subtasks.extend(story_subtasks)
             journal.record(
                 "info",
@@ -318,6 +552,44 @@ class EqualizadorService:
             )
 
         eligible_items = consolidate_items(story_keys, story_items, subtasks)
+        return {
+            "stories": story_payloads,
+            "story_release_map": {
+                key: [reference.to_dict() for reference in references]
+                for key, references in normalized_story_release_map.items()
+            },
+            "eligible_items": [item.to_dict() for item in eligible_items],
+            "matched_merges": [],
+            "commits": [],
+            "unmatched_item_keys": [],
+            "stats": {
+                "input_story_count": len(story_keys),
+                "subtask_count": len(subtasks),
+                "eligible_item_count": len(eligible_items),
+                "matched_item_count": 0,
+                "raw_commit_count": 0,
+                "distinct_commit_count": 0,
+                "unmatched_item_count": 0,
+            },
+        }
+
+    def _build_commit_plan(
+        self,
+        items_payload: dict[str, Any],
+        git: GitAdapter,
+        journal: ExecutionJournal,
+        *,
+        source_ref: str,
+    ) -> tuple[dict[str, Any], list[CandidateCommit]]:
+        story_keys = [
+            str(story.get("key", "")).strip()
+            for story in items_payload.get("stories", [])
+            if str(story.get("key", "")).strip()
+        ]
+        eligible_items = [JiraItem.from_dict(item) for item in items_payload.get("eligible_items", [])]
+        if not story_keys or not eligible_items:
+            raise InconsistentStateError("No cached Jira snapshot found for this run. Execute fetch-jira first.")
+
         eligible_item_keys = {item.key for item in eligible_items}
         merges = git.collect_merges(source_ref)
 
@@ -325,43 +597,67 @@ class EqualizadorService:
         matched_item_keys: set[str] = set()
         matched_merges: list[str] = []
         for merge in merges:
-            matched_key = match_merge_to_item(merge.subject, eligible_item_keys)
-            if not matched_key:
+            matched_keys = match_merge_to_items(merge.subject, eligible_item_keys)
+            if not matched_keys:
                 continue
             parents = git.get_merge_parents(merge.merge_hash)
             if parents is None:
                 continue
-            matched_item_keys.add(matched_key)
+            matched_item_keys.update(matched_keys)
             matched_merges.append(merge.merge_hash)
             raw_candidates.extend(
                 git.list_branch_commits(
                     first_parent=parents[0],
                     branch_parent=parents[1],
                     source_merge=merge.merge_hash,
-                    source_key=matched_key,
+                    source_keys=matched_keys,
                 )
             )
 
         distinct_commits = deduplicate_commits(raw_candidates)
         unmatched_item_keys = find_unmatched_item_keys(eligible_items, matched_item_keys)
-
-        payload = {
-            "stories": [item.to_dict() for item in story_items],
-            "eligible_items": [item.to_dict() for item in eligible_items],
-            "matched_merges": matched_merges,
-            "commits": [{**commit.to_dict(), "cherry_pick_status": "pending"} for commit in distinct_commits],
-            "unmatched_item_keys": unmatched_item_keys,
-            "stats": {
+        updated_payload = dict(items_payload)
+        updated_payload["matched_merges"] = matched_merges
+        updated_payload["commits"] = [{**commit.to_dict(), "cherry_pick_status": "pending"} for commit in distinct_commits]
+        updated_payload["unmatched_item_keys"] = unmatched_item_keys
+        stats = dict(items_payload.get("stats", {}))
+        stats.update(
+            {
                 "input_story_count": len(story_keys),
-                "subtask_count": len(subtasks),
                 "eligible_item_count": len(eligible_items),
                 "matched_item_count": len(matched_item_keys),
                 "raw_commit_count": len(raw_candidates),
                 "distinct_commit_count": len(distinct_commits),
                 "unmatched_item_count": len(unmatched_item_keys),
-            },
-        }
-        return payload, distinct_commits
+            }
+        )
+        updated_payload["stats"] = stats
+        return updated_payload, distinct_commits
+
+    def _build_story_payload(
+        self,
+        story_item: JiraItem,
+        release_refs: list[ReleaseReference],
+    ) -> dict[str, Any]:
+        payload = story_item.to_dict()
+        payload["release_ids"] = [reference.release_id for reference in release_refs]
+        payload["release_names"] = [reference.release_name for reference in release_refs]
+        return payload
+
+    def _mark_failed(
+        self,
+        store: RunStore,
+        manifest: RunManifest,
+        items_payload: dict[str, Any] | None,
+        exc: Exception,
+    ) -> None:
+        if manifest.status == "paused":
+            return
+        manifest.status = "failed"
+        manifest.phase = "failed"
+        manifest.last_error = str(exc)
+        store.write_manifest(manifest)
+        store.write_summary(manifest.run_id, self._render_summary(manifest, items_payload))
 
     def _apply_commit_plan(
         self,
@@ -370,7 +666,7 @@ class EqualizadorService:
         git: GitAdapter,
         manifest: RunManifest,
         commit_plan: list[CandidateCommit],
-        items_payload: dict[str, object],
+        items_payload: dict[str, Any],
     ) -> RunManifest:
         for index in range(manifest.current_commit_index, len(commit_plan)):
             commit = commit_plan[index]
@@ -437,7 +733,7 @@ class EqualizadorService:
         journal.record("info", "Equalization run completed.", phase="completed", action="run-finish", result="ok")
         return manifest
 
-    def _render_summary(self, manifest: RunManifest, items_payload: dict[str, object] | None) -> str:
+    def _render_summary(self, manifest: RunManifest, items_payload: dict[str, Any] | None) -> str:
         stats = (items_payload or {}).get("stats", {})
         unmatched = (items_payload or {}).get("unmatched_item_keys", [])
         lines = [
@@ -447,8 +743,8 @@ class EqualizadorService:
             f"- Branch: {manifest.branch_name}",
             f"- Origem: {manifest.source_ref}",
             f"- Destino: {manifest.target_ref}",
-            f"- Release ID: {manifest.release_id or '-'}",
-            f"- Release Name: {manifest.release_name or '-'}",
+            f"- Release IDs: {manifest.release_id or '-'}",
+            f"- Release Names: {manifest.release_name or '-'}",
             f"- Stories de entrada: {stats.get('input_story_count', len(manifest.input_stories))}",
             f"- Subtasks obtidas: {stats.get('subtask_count', 0)}",
             f"- Itens elegiveis: {stats.get('eligible_item_count', 0)}",

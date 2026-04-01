@@ -9,6 +9,12 @@ from equalizador_promax.gui import launch_gui
 from equalizador_promax.orchestrator import EqualizadorService
 
 
+def _split_csv_argument(raw_value: str | None) -> list[str]:
+    if not raw_value:
+        return []
+    return [part.strip() for part in raw_value.split(",") if part.strip()]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="equalizador-promax")
     parser.add_argument("--config", type=Path, help="Caminho opcional para config.toml")
@@ -42,14 +48,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="origin/quality",
         help="Ref/branche destino usada como base da equalizacao. Default: origin/quality",
     )
-    run_input_group = run_parser.add_mutually_exclusive_group(required=True)
-    run_input_group.add_argument(
+    run_parser.add_argument(
         "--stories",
         help="Lista de stories separadas por virgula. Ex.: SQCRM-6805,SQCRM-6806",
     )
-    run_input_group.add_argument(
+    run_parser.add_argument(
         "--release-id",
-        help="Identificador numerico da versao/release no Jira. Ex.: 59571",
+        help="Lista de IDs numericos de versao/release separada por virgula. Ex.: 59571,59572",
     )
     run_parser.add_argument(
         "--force-new",
@@ -58,6 +63,46 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Ignora execucao aberta com mesmo fingerprint.",
     )
+
+    jira_parser = subparsers.add_parser("fetch-jira", help="Busca stories e subtasks no Jira e salva o snapshot local.")
+    jira_parser.add_argument("--repo", type=Path, required=True, help="Caminho do repositorio Git local.")
+    jira_parser.add_argument(
+        "--source-ref",
+        default="origin/develop",
+        help="Ref/branche origem para buscar merges e commits. Default: origin/develop",
+    )
+    jira_parser.add_argument(
+        "--target-ref",
+        default="origin/quality",
+        help="Ref/branche destino usada como base da equalizacao. Default: origin/quality",
+    )
+    jira_parser.add_argument(
+        "--stories",
+        help="Lista de stories separadas por virgula. Ex.: SQCRM-6805,SQCRM-6806",
+    )
+    jira_parser.add_argument(
+        "--release-id",
+        help="Lista de IDs numericos de versao/release separada por virgula. Ex.: 59571,59572",
+    )
+    jira_parser.add_argument(
+        "--force-new",
+        "--force-now",
+        dest="force_new",
+        action="store_true",
+        help="Ignora execucao aberta com mesmo fingerprint.",
+    )
+
+    commits_parser = subparsers.add_parser("fetch-commits", help="Busca commits usando o ultimo snapshot Jira.")
+    commits_parser.add_argument("--repo", type=Path, required=True, help="Caminho do repositorio Git local.")
+    commits_parser.add_argument("--run-id", help="Identificador da execucao.")
+
+    apply_parser = subparsers.add_parser("apply-cherry-picks", help="Aplica cherry-picks usando a lista de commits salva.")
+    apply_parser.add_argument("--repo", type=Path, required=True, help="Caminho do repositorio Git local.")
+    apply_parser.add_argument("--run-id", help="Identificador da execucao.")
+
+    discard_parser = subparsers.add_parser("discard-branch", help="Descarta a branch atual da equalizacao e volta para a origem.")
+    discard_parser.add_argument("--repo", type=Path, required=True, help="Caminho do repositorio Git local.")
+    discard_parser.add_argument("--run-id", help="Identificador da execucao.")
 
     resume_parser = subparsers.add_parser("resume", help="Retoma uma execucao pausada.")
     resume_parser.add_argument("--repo", type=Path, required=True, help="Caminho do repositorio Git local.")
@@ -88,24 +133,46 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if all(check.ok for check in checks) else 1
 
         if args.command == "run":
-            release_name = None
-            if args.release_id:
-                story_keys, release_name = service.resolve_release(args.release_id)
-            else:
-                story_keys = service.resolve_story_keys(
-                    story_keys=[part.strip() for part in args.stories.split(",")] if args.stories else None,
-                )
-
             manifest = service.run(
                 args.repo,
-                story_keys,
+                *service.resolve_inputs(
+                    release_ids=_split_csv_argument(args.release_id),
+                    story_keys=_split_csv_argument(args.stories),
+                ),
                 force_new=args.force_new,
-                release_id=args.release_id,
-                release_name=release_name,
                 source_ref=args.source_ref,
                 target_ref=args.target_ref,
             )
             print(f"Run {manifest.run_id} finalized with status {manifest.status}.")
+            return 0
+
+        if args.command == "fetch-jira":
+            manifest = service.capture_jira_snapshot(
+                args.repo,
+                *service.resolve_inputs(
+                    release_ids=_split_csv_argument(args.release_id),
+                    story_keys=_split_csv_argument(args.stories),
+                ),
+                force_new=args.force_new,
+                source_ref=args.source_ref,
+                target_ref=args.target_ref,
+            )
+            print(f"Run {manifest.run_id} updated with status {manifest.status}.")
+            return 0
+
+        if args.command == "fetch-commits":
+            manifest = service.fetch_commits(args.repo, args.run_id)
+            print(f"Run {manifest.run_id} updated with status {manifest.status}.")
+            return 0
+
+        if args.command == "apply-cherry-picks":
+            manifest = service.apply_cherry_picks(args.repo, args.run_id)
+            print(f"Run {manifest.run_id} finalized with status {manifest.status}.")
+            return 0
+
+        if args.command == "discard-branch":
+            manifest = service.discard_current_branch(args.repo, args.run_id)
+            print(f"Run {manifest.run_id} updated with status {manifest.status}.")
             return 0
 
         if args.command == "resume":

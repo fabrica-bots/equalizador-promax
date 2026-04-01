@@ -56,9 +56,25 @@ class GitAdapter:
     def status_porcelain(self) -> str:
         return self._git("status", "--porcelain").stdout
 
+    def current_branch_name(self) -> str | None:
+        completed = self._git("branch", "--show-current", check=False)
+        branch_name = completed.stdout.strip()
+        return branch_name or None
+
     def is_cherry_pick_in_progress(self) -> bool:
         completed = self._git("rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD", check=False)
         return completed.returncode == 0
+
+    def branch_exists(self, branch_name: str) -> bool:
+        completed = self._git("rev-parse", "--verify", branch_name, check=False)
+        return completed.returncode == 0
+
+    def resolve_switch_target(self, ref_name: str) -> str:
+        if ref_name.startswith("origin/"):
+            local_branch = ref_name.split("/", 1)[1]
+            if self.branch_exists(local_branch):
+                return local_branch
+        return ref_name
 
     def collect_merges(self, branch_name: str = "develop") -> list[MergeRecord]:
         completed = self._git(
@@ -80,7 +96,13 @@ class GitAdapter:
             return None
         return parents[0], parents[1]
 
-    def list_branch_commits(self, first_parent: str, branch_parent: str, source_merge: str, source_key: str) -> list[CandidateCommit]:
+    def list_branch_commits(
+        self,
+        first_parent: str,
+        branch_parent: str,
+        source_merge: str,
+        source_keys: tuple[str, ...],
+    ) -> list[CandidateCommit]:
         completed = self._git(
             "log",
             f"{first_parent}..{branch_parent}",
@@ -88,6 +110,7 @@ class GitAdapter:
             "--pretty=%H;%ct;%an;%s",
         )
         commits: list[CandidateCommit] = []
+        normalized_source_keys = tuple(sorted(set(source_keys)))
         for line in completed.stdout.splitlines():
             commit_hash, timestamp, author, subject = line.split(";", 3)
             commits.append(
@@ -97,7 +120,7 @@ class GitAdapter:
                     author=author,
                     subject=subject,
                     source_merge=source_merge,
-                    source_keys=(source_key,),
+                    source_keys=normalized_source_keys,
                 )
             )
         return commits
@@ -123,6 +146,16 @@ class GitAdapter:
         if self.is_cherry_pick_in_progress():
             return CherryPickOutcome(status="conflict", stdout=completed.stdout, stderr=completed.stderr)
         raise GitCommandError(list(completed.args), completed.stderr, completed.stdout)
+
+    def cherry_pick_abort(self) -> None:
+        if self.is_cherry_pick_in_progress():
+            self._git("cherry-pick", "--abort")
+
+    def switch(self, ref_name: str) -> None:
+        self._git("switch", ref_name)
+
+    def delete_branch(self, branch_name: str) -> None:
+        self._git("branch", "-D", branch_name)
 
     def _discover_repo_root(self) -> Path:
         self.ensure_git_available()

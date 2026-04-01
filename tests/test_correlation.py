@@ -4,7 +4,8 @@ from equalizador_promax.correlation import (
     consolidate_items,
     deduplicate_commits,
     find_unmatched_item_keys,
-    match_merge_to_item,
+    match_merge_to_items,
+    normalize_release_ids,
     normalize_story_keys,
 )
 from equalizador_promax.models import CandidateCommit, JiraItem
@@ -17,11 +18,20 @@ class CorrelationTests(unittest.TestCase):
             ["SQCRM-1", "SQCRM-2"],
         )
 
-    def test_match_merge_requires_single_eligible_key(self) -> None:
+    def test_normalize_release_ids_deduplicates(self) -> None:
+        self.assertEqual(
+            normalize_release_ids(["59571", " 59571 ", "", "59572"]),
+            ["59571", "59572"],
+        )
+
+    def test_match_merge_returns_all_eligible_keys(self) -> None:
         eligible = {"SQCRM-1", "SQCRM-2"}
-        self.assertEqual(match_merge_to_item("Merge PR 100 - SQCRM-1 ajuste", eligible), "SQCRM-1")
-        self.assertIsNone(match_merge_to_item("Merge PR 101 - SQCRM-1 SQCRM-2", eligible))
-        self.assertIsNone(match_merge_to_item("Merge PR 102 - sem issue", eligible))
+        self.assertEqual(match_merge_to_items("Merge PR 100 - SQCRM-1 ajuste", eligible), ("SQCRM-1",))
+        self.assertEqual(
+            match_merge_to_items("Merge PR 101 - GitHub-EDP/SQCRM-1_SQCRM-2_bug", eligible),
+            ("SQCRM-1", "SQCRM-2"),
+        )
+        self.assertEqual(match_merge_to_items("Merge PR 102 - sem issue", eligible), ())
 
     def test_consolidate_and_find_unmatched_items(self) -> None:
         story_items = [JiraItem(key="SQCRM-1", parent_key=None, item_type="story")]

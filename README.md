@@ -66,7 +66,7 @@ Na interface desktop, o segredo real do Jira deve ser informado no campo `PAT / 
 Quando salvo pela interface, esse token fica guardado localmente em `%APPDATA%\\EqualizadorProMax`, para reaparecer automaticamente nas proximas aberturas sem depender de variavel de ambiente e sem entrar no versionamento do Git.
 Na area de execucao, o usuario tambem pode ajustar a `branche origem` e a `branche destino`. Os defaults sao `origin/develop` e `origin/quality`.
 
-Executar uma equalizacao:
+Executar uma equalizacao com stories manuais:
 
 ```powershell
 python -m equalizador_promax run --repo C:\caminho\repo --stories SQCRM-6805,SQCRM-6806
@@ -78,19 +78,25 @@ Com refs explicitas:
 python -m equalizador_promax run --repo C:\caminho\repo --stories SQCRM-6805,SQCRM-6806 --source-ref origin/develop --target-ref origin/quality
 ```
 
-Ou usar o identificador numerico da release/version no Jira:
+Ou usar um ou mais identificadores numericos de release/version no Jira:
 
 ```powershell
-python -m equalizador_promax run --repo C:\caminho\repo --release-id 59571
+python -m equalizador_promax run --repo C:\caminho\repo --release-id 59571,59572
+```
+
+Tambem e possivel combinar releases e stories manuais na mesma execucao:
+
+```powershell
+python -m equalizador_promax run --repo C:\caminho\repo --release-id 59571,59572 --stories SQCRM-6805,SQCRM-6806
 ```
 
 Para ignorar uma execucao anterior aberta com o mesmo fingerprint:
 
 ```powershell
-python -m equalizador_promax run --repo C:\caminho\repo --release-id 59571 --force-now
+python -m equalizador_promax run --repo C:\caminho\repo --release-id 59571,59572 --force-now
 ```
 
-Quando a execucao usa `--release-id`, a branch de equalizacao passa a seguir o padrao:
+Quando a execucao usa exatamente um `--release-id`, a branch de equalizacao passa a seguir o padrao:
 
 ```text
 equalizacao/NOME_VERSAO_DD-MM-YYYY-HH-MM-SS

@@ -9,6 +9,8 @@ from equalizador_promax.errors import InconsistentStateError
 from equalizador_promax.models import RunManifest
 from equalizador_promax.utils import timestamp_to_iso_utc, utc_now_iso
 
+OPEN_RUN_STATUSES = {"initializing", "jira-ready", "commits-ready", "running", "paused"}
+
 
 class RunStore:
     def __init__(self, state_root: Path) -> None:
@@ -47,7 +49,7 @@ class RunStore:
 
     def find_open_run(self, fingerprint: str) -> RunManifest | None:
         for manifest in self.list_manifests():
-            if manifest.fingerprint == fingerprint and manifest.status in {"initializing", "running", "paused"}:
+            if manifest.fingerprint == fingerprint and manifest.status in OPEN_RUN_STATUSES:
                 return manifest
         return None
 
@@ -80,6 +82,17 @@ class RunStore:
         self.write_items(run_id, payload)
         return payload
 
+    def replace_items(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self.write_items(run_id, payload)
+        return payload
+
+    def reset_commit_statuses(self, run_id: str, *, status: str = "pending") -> dict[str, Any]:
+        payload = self.load_items(run_id)
+        for commit in payload.get("commits", []):
+            commit["cherry_pick_status"] = status
+        self.write_items(run_id, payload)
+        return payload
+
     def write_summary(self, run_id: str, content: str) -> None:
         (self.run_dir(run_id) / "summary.md").write_text(content, encoding="utf-8")
 
@@ -103,12 +116,14 @@ class RunStore:
 
     def _write_stories_txt(self, path: Path, payload: dict[str, Any]) -> None:
         stories = payload.get("stories", [])
-        lines = [story["key"] for story in stories if story.get("key")]
+        lines = [self._format_story_line(story) for story in stories if story.get("key")]
         path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
     def _write_subtasks_txt(self, path: Path, payload: dict[str, Any]) -> None:
         eligible_items = payload.get("eligible_items", [])
-        story_order = [story["key"] for story in payload.get("stories", []) if story.get("key")]
+        stories = [story for story in payload.get("stories", []) if story.get("key")]
+        story_order = [story["key"] for story in stories]
+        stories_by_key = {story["key"]: story for story in stories}
         subtasks_by_story: dict[str, list[str]] = {story_key: [] for story_key in story_order}
 
         for item in eligible_items:
@@ -121,7 +136,7 @@ class RunStore:
 
         lines: list[str] = []
         for story_key in story_order:
-            lines.append(story_key)
+            lines.append(self._format_story_line(stories_by_key[story_key]))
             story_subtasks = subtasks_by_story.get(story_key, [])
             if story_subtasks:
                 lines.extend([f"- {subtask_key}" for subtask_key in story_subtasks])
@@ -132,6 +147,25 @@ class RunStore:
         if lines and not lines[-1]:
             lines.pop()
         path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+    def _format_story_line(self, story: dict[str, Any]) -> str:
+        key = str(story.get("key", "")).strip()
+        release_names = self._normalize_release_names(story.get("release_names", []))
+        if not release_names:
+            return key
+        release_label = "Release" if len(release_names) == 1 else "Releases"
+        return f"{key} [{release_label}: {', '.join(release_names)}]"
+
+    def _normalize_release_names(self, raw_release_names: Any) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_release_name in raw_release_names or []:
+            release_name = str(raw_release_name).strip()
+            if not release_name or release_name in seen:
+                continue
+            normalized.append(release_name)
+            seen.add(release_name)
+        return normalized
 
     def _write_commits_csv(self, path: Path, payload: dict[str, Any]) -> None:
         commits = payload.get("commits", [])

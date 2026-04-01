@@ -31,6 +31,12 @@ class UtilsTests(unittest.TestCase):
             {"SQCRM-10", "AJUSTE-4"},
         )
 
+    def test_extract_issue_keys_handles_underscore_separated_branch_names(self) -> None:
+        self.assertEqual(
+            extract_issue_keys("CRMBR-3760_CRMBR-3808_e_CRMBR-3761_CRMBR-3810"),
+            {"CRMBR-3760", "CRMBR-3808", "CRMBR-3761", "CRMBR-3810"},
+        )
+
     def test_build_release_branch_name(self) -> None:
         branch_name = build_release_branch_name(
             "Versão Release 58",

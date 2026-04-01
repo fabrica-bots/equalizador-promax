@@ -13,6 +13,30 @@ class JiraItem:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "JiraItem":
+        return cls(
+            key=payload["key"],
+            parent_key=payload.get("parent_key"),
+            item_type=payload.get("item_type", "story"),
+        )
+
+
+@dataclass(frozen=True)
+class ReleaseReference:
+    release_id: str
+    release_name: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ReleaseReference":
+        return cls(
+            release_id=payload["release_id"],
+            release_name=payload["release_name"],
+        )
+
 
 @dataclass(frozen=True)
 class MergeRecord:

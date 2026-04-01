@@ -19,6 +19,18 @@ def normalize_story_keys(raw_story_keys: Iterable[str]) -> list[str]:
     return normalized
 
 
+def normalize_release_ids(raw_release_ids: Iterable[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_release_id in raw_release_ids:
+        release_id = raw_release_id.strip()
+        if not release_id or release_id in seen:
+            continue
+        normalized.append(release_id)
+        seen.add(release_id)
+    return normalized
+
+
 def consolidate_items(
     story_keys: Sequence[str],
     story_items: Sequence[JiraItem],
@@ -34,11 +46,8 @@ def consolidate_items(
     return list(ordered.values())
 
 
-def match_merge_to_item(subject: str, eligible_keys: set[str]) -> str | None:
-    matches = sorted(extract_issue_keys(subject) & eligible_keys)
-    if len(matches) != 1:
-        return None
-    return matches[0]
+def match_merge_to_items(subject: str, eligible_keys: set[str]) -> tuple[str, ...]:
+    return tuple(sorted(extract_issue_keys(subject) & eligible_keys))
 
 
 def deduplicate_commits(commits: Sequence[CandidateCommit]) -> list[CandidateCommit]:

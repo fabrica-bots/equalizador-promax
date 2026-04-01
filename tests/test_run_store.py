@@ -14,11 +14,21 @@ class RunStoreTests(unittest.TestCase):
             run_id = "20260321-210345-repo"
             store.run_dir(run_id).mkdir(parents=True, exist_ok=True)
             payload = {
-                "stories": [{"key": "SQCRM-7637"}, {"key": "SQCRM-7638"}],
+                "stories": [
+                    {"key": "SQCRM-7637", "release_ids": ["59571"], "release_names": ["Versão Release 58"]},
+                    {
+                        "key": "SQCRM-7638",
+                        "release_ids": ["59571", "59572"],
+                        "release_names": ["Versão Release 58", "Versão Release 59"],
+                    },
+                    {"key": "SQCRM-7639", "release_ids": [], "release_names": []},
+                ],
                 "eligible_items": [
                     {"key": "SQCRM-7637", "item_type": "story", "parent_key": None},
                     {"key": "SQCRM-7693", "item_type": "subtask", "parent_key": "SQCRM-7637"},
                     {"key": "SQCRM-7638", "item_type": "story", "parent_key": None},
+                    {"key": "SQCRM-7700", "item_type": "subtask", "parent_key": "SQCRM-7638"},
+                    {"key": "SQCRM-7639", "item_type": "story", "parent_key": None},
                 ],
                 "commits": [
                     {
@@ -39,9 +49,18 @@ class RunStoreTests(unittest.TestCase):
             with (store.run_dir(run_id) / "commits.csv").open(encoding="utf-8", newline="") as handle:
                 rows = list(csv.DictReader(handle))
 
-            self.assertEqual(stories_txt, "SQCRM-7637\nSQCRM-7638\n")
-            self.assertIn("SQCRM-7637\n- SQCRM-7693", subtasks_txt)
-            self.assertIn("SQCRM-7638\n- <sem subtasks>", subtasks_txt)
+            self.assertEqual(
+                stories_txt,
+                "SQCRM-7637 [Release: Versão Release 58]\n"
+                "SQCRM-7638 [Releases: Versão Release 58, Versão Release 59]\n"
+                "SQCRM-7639\n",
+            )
+            self.assertIn("SQCRM-7637 [Release: Versão Release 58]\n- SQCRM-7693", subtasks_txt)
+            self.assertIn(
+                "SQCRM-7638 [Releases: Versão Release 58, Versão Release 59]\n- SQCRM-7700",
+                subtasks_txt,
+            )
+            self.assertIn("SQCRM-7639\n- <sem subtasks>", subtasks_txt)
             self.assertEqual(rows[0]["commit_hash"], "abc123")
             self.assertEqual(rows[0]["author"], "Lucas")
             self.assertEqual(rows[0]["cherry_pick_status"], "conflict")
