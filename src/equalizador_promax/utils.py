@@ -44,6 +44,19 @@ def timestamp_to_iso_utc(timestamp: int) -> str:
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).replace(microsecond=0).isoformat()
 
 
+def normalize_branch_ref(value: str) -> str:
+    normalized = (value or "").strip()
+    for prefix in ("refs/heads/", "refs/remotes/", "remotes/"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix) :]
+            break
+    for remote_prefix in ("origin/", "upstream/"):
+        if normalized.startswith(remote_prefix):
+            normalized = normalized[len(remote_prefix) :]
+            break
+    return normalized.strip().lower()
+
+
 def sanitize_branch_component(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     normalized = normalized.lower().strip()

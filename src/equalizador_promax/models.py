@@ -9,6 +9,7 @@ class JiraItem:
     key: str
     parent_key: str | None
     item_type: str
+    issue_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -19,7 +20,24 @@ class JiraItem:
             key=payload["key"],
             parent_key=payload.get("parent_key"),
             item_type=payload.get("item_type", "story"),
+            issue_id=payload.get("issue_id"),
         )
+
+
+@dataclass(frozen=True)
+class JiraPullRequest:
+    issue_key: str
+    issue_id: str
+    pr_id: str
+    title: str
+    url: str
+    status: str
+    source_branch: str
+    destination_branch: str
+    repository_name: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)

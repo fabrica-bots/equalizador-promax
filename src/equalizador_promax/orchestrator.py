@@ -16,9 +16,15 @@ from equalizador_promax.correlation import (
 from equalizador_promax.errors import ConflictPauseError, InconsistentStateError, ValidationError
 from equalizador_promax.git_adapter import GitAdapter
 from equalizador_promax.jira_client import JiraClient
-from equalizador_promax.models import CandidateCommit, DoctorCheck, JiraItem, ReleaseReference, RunManifest
+from equalizador_promax.models import CandidateCommit, DoctorCheck, JiraItem, JiraPullRequest, ReleaseReference, RunManifest
 from equalizador_promax.run_store import ExecutionJournal, RunStore
-from equalizador_promax.utils import build_release_branch_name, calculate_fingerprint, generate_run_id, utc_now_iso
+from equalizador_promax.utils import (
+    build_release_branch_name,
+    calculate_fingerprint,
+    generate_run_id,
+    normalize_branch_ref,
+    utc_now_iso,
+)
 
 
 class EqualizadorService:
@@ -217,6 +223,7 @@ class EqualizadorService:
                 git,
                 journal,
                 source_ref=manifest.source_ref,
+                target_ref=manifest.target_ref,
             )
             manifest.total_commits = len(commit_plan)
             manifest.current_commit_index = 0
@@ -410,25 +417,35 @@ class EqualizadorService:
             raise ConflictPauseError(
                 f"Conflict still unresolved for commit {current_commit.commit_hash}. Check resume-hints.txt."
             )
-
-        manifest.applied_commit_count = max(manifest.applied_commit_count, manifest.current_commit_index + 1)
-        manifest.current_commit_index += 1
-        items_payload = store.update_commit_status(manifest.run_id, current_commit.commit_hash, "applied")
-        manifest.status = "running"
-        manifest.phase = "applying"
-        manifest.paused_reason = None
-        manifest.conflict_commit = None
-        manifest.last_error = None
-        store.write_manifest(manifest)
-        journal.record(
-            "info",
-            f"Cherry-pick continued successfully for {current_commit.commit_hash}.",
-            phase="resume",
-            item_key=",".join(current_commit.source_keys),
-            commit_hash=current_commit.commit_hash,
-            action="cherry-pick-continue",
-            result="ok",
-        )
+        if outcome.status == "empty":
+            git.cherry_pick_skip()
+            items_payload = self._complete_processed_commit(
+                store,
+                journal,
+                manifest,
+                items_payload,
+                current_commit,
+                phase="resume",
+                action="cherry-pick-skip",
+                result="empty",
+                commit_status="skipped-empty",
+                message=f"Commit {current_commit.commit_hash} skipped because the cherry-pick became empty after conflict resolution.",
+                applied=False,
+            )
+        else:
+            items_payload = self._complete_processed_commit(
+                store,
+                journal,
+                manifest,
+                items_payload,
+                current_commit,
+                phase="resume",
+                action="cherry-pick-continue",
+                result="ok",
+                commit_status="applied",
+                message=f"Cherry-pick continued successfully for {current_commit.commit_hash}.",
+                applied=True,
+            )
         return self._apply_commit_plan(store, journal, git, manifest, commit_plan, items_payload)
 
     def status(self, repo_path: Path, run_id: str | None = None) -> str:
@@ -451,6 +468,7 @@ class EqualizadorService:
             f"Applied commits: {manifest.applied_commit_count}/{manifest.total_commits}",
             f"Conflicts: {manifest.conflict_count}",
         ]
+        lines.append(f"Skipped empty commits: {self._count_commit_status(items_payload, 'skipped-empty') if items_payload else 0}")
         if manifest.paused_reason:
             lines.append(f"Paused reason: {manifest.paused_reason}")
         if manifest.conflict_commit:
@@ -458,6 +476,7 @@ class EqualizadorService:
         if items_payload:
             stats = items_payload.get("stats", {})
             lines.append(f"Eligible items: {stats.get('eligible_item_count', 0)}")
+            lines.append(f"Commits ja no destino: {stats.get('target_transferred_commit_count', 0)}")
             lines.append(f"Unmatched items: {stats.get('unmatched_item_count', 0)}")
         lines.append(f"Artifacts: {store.run_dir(manifest.run_id)}")
         return "\n".join(lines)
@@ -580,6 +599,7 @@ class EqualizadorService:
         journal: ExecutionJournal,
         *,
         source_ref: str,
+        target_ref: str,
     ) -> tuple[dict[str, Any], list[CandidateCommit]]:
         story_keys = [
             str(story.get("key", "")).strip()
@@ -616,9 +636,23 @@ class EqualizadorService:
 
         distinct_commits = deduplicate_commits(raw_candidates)
         unmatched_item_keys = find_unmatched_item_keys(eligible_items, matched_item_keys)
+        target_transfer_annotations = self._build_target_transfer_annotations(
+            distinct_commits,
+            eligible_items,
+            target_ref=target_ref,
+            repo_slug=git.repo_root.name,
+            journal=journal,
+        )
         updated_payload = dict(items_payload)
         updated_payload["matched_merges"] = matched_merges
-        updated_payload["commits"] = [{**commit.to_dict(), "cherry_pick_status": "pending"} for commit in distinct_commits]
+        updated_payload["commits"] = [
+            {
+                **commit.to_dict(),
+                **target_transfer_annotations.get(commit.commit_hash, {}),
+                "cherry_pick_status": "pending",
+            }
+            for commit in distinct_commits
+        ]
         updated_payload["unmatched_item_keys"] = unmatched_item_keys
         stats = dict(items_payload.get("stats", {}))
         stats.update(
@@ -628,11 +662,105 @@ class EqualizadorService:
                 "matched_item_count": len(matched_item_keys),
                 "raw_commit_count": len(raw_candidates),
                 "distinct_commit_count": len(distinct_commits),
+                "target_transferred_commit_count": sum(
+                    1
+                    for annotation in target_transfer_annotations.values()
+                    if annotation.get("ja_no_destino") == "sim"
+                ),
                 "unmatched_item_count": len(unmatched_item_keys),
             }
         )
         updated_payload["stats"] = stats
         return updated_payload, distinct_commits
+
+    def _build_target_transfer_annotations(
+        self,
+        commits: list[CandidateCommit],
+        eligible_items: list[JiraItem],
+        *,
+        target_ref: str,
+        repo_slug: str,
+        journal: ExecutionJournal,
+    ) -> dict[str, dict[str, str]]:
+        annotations = {
+            commit.commit_hash: {"ja_no_destino": "indeterminado", "prs_destino": ""}
+            for commit in commits
+        }
+        if not commits:
+            return annotations
+
+        target_branch = normalize_branch_ref(target_ref)
+        if not target_branch:
+            return annotations
+
+        commit_keys = sorted({source_key for commit in commits for source_key in commit.source_keys})
+        eligible_item_keys = {item.key for item in eligible_items}
+        issue_keys = [key for key in commit_keys if key in eligible_item_keys]
+        if not issue_keys:
+            return annotations
+
+        try:
+            pull_requests_by_key = self.jira.fetch_pull_requests_for_issue_keys(issue_keys)
+        except Exception as exc:
+            journal.record(
+                "warning",
+                f"Unable to check Jira pull requests for target branch: {exc}",
+                phase="planning",
+                action="target-transfer-check",
+                result="unknown",
+            )
+            return annotations
+
+        checked_keys = set(issue_keys)
+        for commit in commits:
+            matched_pull_requests: list[JiraPullRequest] = []
+            unchecked_source_key = False
+            for source_key in commit.source_keys:
+                if source_key not in checked_keys:
+                    unchecked_source_key = True
+                    continue
+                for pull_request in pull_requests_by_key.get(source_key, []):
+                    if self._is_merged_to_target(pull_request, target_branch, repo_slug):
+                        matched_pull_requests.append(pull_request)
+
+            if matched_pull_requests:
+                annotations[commit.commit_hash] = {
+                    "ja_no_destino": "sim",
+                    "prs_destino": self._format_pull_request_references(matched_pull_requests),
+                }
+            elif unchecked_source_key:
+                annotations[commit.commit_hash] = {"ja_no_destino": "indeterminado", "prs_destino": ""}
+            else:
+                annotations[commit.commit_hash] = {"ja_no_destino": "nao_detectado", "prs_destino": ""}
+
+        return annotations
+
+    def _is_merged_to_target(self, pull_request: JiraPullRequest, target_branch: str, repo_slug: str) -> bool:
+        if pull_request.repository_name and pull_request.repository_name.lower() != repo_slug.lower():
+            return False
+        return pull_request.status == "MERGED" and normalize_branch_ref(pull_request.destination_branch) == target_branch
+
+    def _format_pull_request_references(self, pull_requests: list[JiraPullRequest]) -> str:
+        references: list[str] = []
+        seen: set[str] = set()
+        for pull_request in pull_requests:
+            branch_flow = " -> ".join(
+                branch
+                for branch in (pull_request.source_branch, pull_request.destination_branch)
+                if branch
+            )
+            title = pull_request.title or f"PR {pull_request.pr_id}".strip()
+            parts = [pull_request.issue_key, pull_request.repository_name, title, pull_request.status]
+            if branch_flow:
+                parts.append(branch_flow)
+            if pull_request.url:
+                parts.append(pull_request.url)
+            reference = " | ".join(part for part in parts if part)
+            if reference in seen:
+                continue
+            references.append(reference)
+            seen.add(reference)
+        return "; ".join(references)
 
     def _build_story_payload(
         self,
@@ -658,6 +786,47 @@ class EqualizadorService:
         manifest.last_error = str(exc)
         store.write_manifest(manifest)
         store.write_summary(manifest.run_id, self._render_summary(manifest, items_payload))
+
+    def _complete_processed_commit(
+        self,
+        store: RunStore,
+        journal: ExecutionJournal,
+        manifest: RunManifest,
+        items_payload: dict[str, Any],
+        commit: CandidateCommit,
+        *,
+        phase: str,
+        action: str,
+        result: str,
+        commit_status: str,
+        message: str,
+        applied: bool,
+    ) -> dict[str, Any]:
+        manifest.current_commit_index += 1
+        if applied:
+            manifest.applied_commit_count += 1
+        items_payload = store.update_commit_status(manifest.run_id, commit.commit_hash, commit_status)
+        manifest.status = "running"
+        manifest.phase = "applying"
+        manifest.paused_reason = None
+        manifest.conflict_commit = None
+        manifest.last_error = None
+        store.write_manifest(manifest)
+        journal.record(
+            "info",
+            message,
+            phase=phase,
+            item_key=",".join(commit.source_keys),
+            commit_hash=commit.commit_hash,
+            action=action,
+            result=result,
+        )
+        return items_payload
+
+    def _count_commit_status(self, items_payload: dict[str, Any] | None, status: str) -> int:
+        if not items_payload:
+            return 0
+        return sum(1 for commit in items_payload.get("commits", []) if commit.get("cherry_pick_status") == status)
 
     def _apply_commit_plan(
         self,
@@ -708,19 +877,35 @@ class EqualizadorService:
                 raise ConflictPauseError(
                     f"Conflict while applying commit {commit.commit_hash}. Check resume-hints.txt."
                 )
+            if outcome.status == "empty":
+                git.cherry_pick_skip()
+                items_payload = self._complete_processed_commit(
+                    store,
+                    journal,
+                    manifest,
+                    items_payload,
+                    commit,
+                    phase="applying",
+                    action="cherry-pick-skip",
+                    result="empty",
+                    commit_status="skipped-empty",
+                    message=f"Commit {commit.commit_hash} skipped because cherry-pick produced no changes.",
+                    applied=False,
+                )
+                continue
 
-            manifest.applied_commit_count = index + 1
-            manifest.current_commit_index = index + 1
-            items_payload = store.update_commit_status(manifest.run_id, commit.commit_hash, "applied")
-            store.write_manifest(manifest)
-            journal.record(
-                "info",
-                f"Commit {commit.commit_hash} applied.",
+            items_payload = self._complete_processed_commit(
+                store,
+                journal,
+                manifest,
+                items_payload,
+                commit,
                 phase="applying",
-                item_key=",".join(commit.source_keys),
-                commit_hash=commit.commit_hash,
                 action="cherry-pick",
                 result="ok",
+                commit_status="applied",
+                message=f"Commit {commit.commit_hash} applied.",
+                applied=True,
             )
 
         manifest.status = "completed"
@@ -750,7 +935,9 @@ class EqualizadorService:
             f"- Itens elegiveis: {stats.get('eligible_item_count', 0)}",
             f"- Commits encontrados (bruto): {stats.get('raw_commit_count', 0)}",
             f"- Commits distintos: {stats.get('distinct_commit_count', manifest.total_commits)}",
+            f"- Commits ja no destino: {stats.get('target_transferred_commit_count', 0)}",
             f"- Commits aplicados: {manifest.applied_commit_count}",
+            f"- Commits pulados por vazio: {self._count_commit_status(items_payload, 'skipped-empty')}",
             f"- Conflitos: {manifest.conflict_count}",
             f"- Itens sem correspondencia: {stats.get('unmatched_item_count', 0)}",
         ]

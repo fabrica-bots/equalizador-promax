@@ -178,6 +178,8 @@ class RunStore:
                     "author",
                     "subject",
                     "source_keys",
+                    "ja_no_destino",
+                    "prs_destino",
                     "cherry_pick_status",
                 ],
             )
@@ -190,6 +192,8 @@ class RunStore:
                         "author": commit.get("author", ""),
                         "subject": commit.get("subject", ""),
                         "source_keys": ",".join(commit.get("source_keys", [])),
+                        "ja_no_destino": commit.get("ja_no_destino", "indeterminado"),
+                        "prs_destino": commit.get("prs_destino", ""),
                         "cherry_pick_status": commit.get("cherry_pick_status", "pending"),
                     }
                 )

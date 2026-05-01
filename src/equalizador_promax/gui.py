@@ -17,7 +17,7 @@ from equalizador_promax.config import AppConfig, JiraSettings, default_config_pa
 from equalizador_promax.jira_client import save_jira_secret
 
 GUI_SECRET_ACCOUNT = "gui-default"
-COMMIT_GRID_COLUMNS = ("cherry_pick_status", "commit_hash", "commit_datetime_utc", "author")
+COMMIT_GRID_COLUMNS = ("ja_no_destino", "cherry_pick_status", "commit_hash", "commit_datetime_utc", "author")
 
 
 def global_state_dir() -> Path:
@@ -55,7 +55,7 @@ def latest_commits_csv_path(repo_path: str | Path | None) -> Path | None:
     return commits_csv_path if commits_csv_path.exists() else None
 
 
-def load_commit_grid_rows(commits_csv_path: Path | None) -> list[tuple[str, str, str, str]]:
+def load_commit_grid_rows(commits_csv_path: Path | None) -> list[tuple[str, str, str, str, str]]:
     if commits_csv_path is None or not commits_csv_path.exists():
         return []
 
@@ -64,6 +64,7 @@ def load_commit_grid_rows(commits_csv_path: Path | None) -> list[tuple[str, str,
             reader = csv.DictReader(handle)
             return [
                 (
+                    str(row.get("ja_no_destino", "")),
                     str(row.get("cherry_pick_status", "")),
                     str(row.get("commit_hash", "")),
                     str(row.get("commit_datetime_utc", "")),
@@ -283,12 +284,14 @@ class EqualizadorPromaxApp:
         horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
         self.commit_grid.configure(yscrollcommand=vertical_scrollbar.set, xscrollcommand=horizontal_scrollbar.set)
 
+        self.commit_grid.heading("ja_no_destino", text="ja_no_destino")
         self.commit_grid.heading("cherry_pick_status", text="cherry_pick_status")
         self.commit_grid.heading("commit_hash", text="commit_hash")
         self.commit_grid.heading("commit_datetime_utc", text="commit_datetime_utc")
         self.commit_grid.heading("author", text="author")
+        self.commit_grid.column("ja_no_destino", width=130, minwidth=110, stretch=False)
         self.commit_grid.column("cherry_pick_status", width=130, minwidth=110, stretch=False)
-        self.commit_grid.column("commit_hash", width=260, minwidth=220, stretch=False)
+        self.commit_grid.column("commit_hash", width=220, minwidth=180, stretch=False)
         self.commit_grid.column("commit_datetime_utc", width=180, minwidth=160, stretch=False)
         self.commit_grid.column("author", width=140, minwidth=120, stretch=True)
         return frame
@@ -581,7 +584,7 @@ class EqualizadorPromaxApp:
             return None
         return (str(commits_csv_path), stat_result.st_mtime_ns, stat_result.st_size)
 
-    def _set_commit_grid_rows(self, rows: list[tuple[str, str, str, str]], status_message: str) -> None:
+    def _set_commit_grid_rows(self, rows: list[tuple[str, str, str, str, str]], status_message: str) -> None:
         if self.commit_grid is None:
             self.commit_grid_status_var.set(status_message)
             return

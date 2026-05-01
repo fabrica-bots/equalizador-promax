@@ -43,8 +43,8 @@ class GuiPathTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             commits_csv_path = Path(temp_dir) / "commits.csv"
             commits_csv_path.write_text(
-                "commit_hash,commit_datetime_utc,author,subject,source_keys,cherry_pick_status\n"
-                "abc123,2026-04-01T12:00:00+00:00,Lucas,feat: ajuste,SQCRM-1,applied\n",
+                "commit_hash,commit_datetime_utc,author,subject,source_keys,ja_no_destino,prs_destino,cherry_pick_status\n"
+                "abc123,2026-04-01T12:00:00+00:00,Lucas,feat: ajuste,SQCRM-1,sim,,applied\n",
                 encoding="utf-8",
             )
 
@@ -52,7 +52,7 @@ class GuiPathTests(unittest.TestCase):
 
             self.assertEqual(
                 rows,
-                [("applied", "abc123", "2026-04-01T12:00:00+00:00", "Lucas")],
+                [("sim", "applied", "abc123", "2026-04-01T12:00:00+00:00", "Lucas")],
             )
 
 

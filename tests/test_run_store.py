@@ -37,6 +37,8 @@ class RunStoreTests(unittest.TestCase):
                         "author": "Lucas",
                         "subject": "feat: ajuste",
                         "source_keys": ["SQCRM-7637"],
+                        "ja_no_destino": "sim",
+                        "prs_destino": "SQCRM-7637 | Release 58 | MERGED | feature/a -> quality",
                         "cherry_pick_status": "conflict",
                     }
                 ],
@@ -63,6 +65,8 @@ class RunStoreTests(unittest.TestCase):
             self.assertIn("SQCRM-7639\n- <sem subtasks>", subtasks_txt)
             self.assertEqual(rows[0]["commit_hash"], "abc123")
             self.assertEqual(rows[0]["author"], "Lucas")
+            self.assertEqual(rows[0]["ja_no_destino"], "sim")
+            self.assertIn("Release 58", rows[0]["prs_destino"])
             self.assertEqual(rows[0]["cherry_pick_status"], "conflict")
 
     def test_list_manifests_supports_nested_run_directories(self) -> None:

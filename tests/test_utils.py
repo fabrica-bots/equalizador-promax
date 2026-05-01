@@ -7,6 +7,7 @@ from equalizador_promax.utils import (
     calculate_fingerprint,
     extract_issue_keys,
     generate_run_id,
+    normalize_branch_ref,
 )
 
 
@@ -36,6 +37,11 @@ class UtilsTests(unittest.TestCase):
             extract_issue_keys("CRMBR-3760_CRMBR-3808_e_CRMBR-3761_CRMBR-3810"),
             {"CRMBR-3760", "CRMBR-3808", "CRMBR-3761", "CRMBR-3810"},
         )
+
+    def test_normalize_branch_ref_removes_common_ref_prefixes(self) -> None:
+        self.assertEqual(normalize_branch_ref("origin/quality"), "quality")
+        self.assertEqual(normalize_branch_ref("refs/heads/Quality"), "quality")
+        self.assertEqual(normalize_branch_ref("refs/remotes/origin/quality"), "quality")
 
     def test_build_release_branch_name(self) -> None:
         branch_name = build_release_branch_name(

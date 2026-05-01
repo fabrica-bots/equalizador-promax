@@ -116,7 +116,7 @@ python -m equalizador_promax status --repo C:\caminho\repo
 
 ## Observacao operacional
 
-Quando houver conflito, a ferramenta pausa e grava instrucoes em `resume-hints.txt`. Resolva os arquivos, deixe o cherry-pick pronto para continuacao e entao execute `resume`. Neste primeiro corte, o fluxo pressupoe que a retomada seja feita pela CLI, sem rodar `git cherry-pick --continue` manualmente antes do `resume`.
+Quando houver conflito, a ferramenta pausa e grava instrucoes em `resume-hints.txt`. Resolva os arquivos, deixe o cherry-pick pronto para continuacao e entao execute `resume`. Neste primeiro corte, o fluxo pressupoe que a retomada seja feita pela CLI, sem rodar `git cherry-pick --continue` manualmente antes do `resume`. Se a continuacao resultar em `empty cherry-pick`, a ferramenta executa `git cherry-pick --skip`, marca o commit como `skipped-empty` e segue para o proximo.
 
 ## Artefatos por execucao
 

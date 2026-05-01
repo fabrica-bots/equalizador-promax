@@ -131,21 +131,20 @@ class GitAdapter:
             raise ValidationError(f"Branch {branch_name} already exists.")
         self._git("switch", "-c", branch_name, base_ref)
 
+    def has_unmerged_paths(self) -> bool:
+        completed = self._git("diff", "--name-only", "--diff-filter=U")
+        return bool(completed.stdout.strip())
+
     def cherry_pick(self, commit_hash: str) -> CherryPickOutcome:
         completed = self._git("cherry-pick", commit_hash, check=False)
-        if completed.returncode == 0:
-            return CherryPickOutcome(status="applied", stdout=completed.stdout, stderr=completed.stderr)
-        if self.is_cherry_pick_in_progress():
-            return CherryPickOutcome(status="conflict", stdout=completed.stdout, stderr=completed.stderr)
-        raise GitCommandError(list(completed.args), completed.stderr, completed.stdout)
+        return self._classify_cherry_pick_outcome(completed)
 
     def cherry_pick_continue(self) -> CherryPickOutcome:
         completed = self._git("cherry-pick", "--continue", check=False)
-        if completed.returncode == 0:
-            return CherryPickOutcome(status="applied", stdout=completed.stdout, stderr=completed.stderr)
-        if self.is_cherry_pick_in_progress():
-            return CherryPickOutcome(status="conflict", stdout=completed.stdout, stderr=completed.stderr)
-        raise GitCommandError(list(completed.args), completed.stderr, completed.stdout)
+        return self._classify_cherry_pick_outcome(completed)
+
+    def cherry_pick_skip(self) -> None:
+        self._git("cherry-pick", "--skip")
 
     def cherry_pick_abort(self) -> None:
         if self.is_cherry_pick_in_progress():
@@ -161,6 +160,15 @@ class GitAdapter:
         self.ensure_git_available()
         completed = self._git("rev-parse", "--show-toplevel")
         return Path(completed.stdout.strip()).resolve()
+
+    def _classify_cherry_pick_outcome(self, completed: subprocess.CompletedProcess[str]) -> CherryPickOutcome:
+        if completed.returncode == 0:
+            return CherryPickOutcome(status="applied", stdout=completed.stdout, stderr=completed.stderr)
+        if self.is_cherry_pick_in_progress():
+            if not self.has_unmerged_paths() and not self.status_porcelain().strip():
+                return CherryPickOutcome(status="empty", stdout=completed.stdout, stderr=completed.stderr)
+            return CherryPickOutcome(status="conflict", stdout=completed.stdout, stderr=completed.stderr)
+        raise GitCommandError(list(completed.args), completed.stderr, completed.stdout)
 
     def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         completed = subprocess.run(

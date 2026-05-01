@@ -1,10 +1,14 @@
+import tempfile
 import unittest
-from unittest.mock import Mock
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 from equalizador_promax.config import AppConfig, JiraSettings
 from equalizador_promax.errors import ValidationError
-from equalizador_promax.models import CandidateCommit, JiraItem, MergeRecord, ReleaseReference
+from equalizador_promax.git_adapter import CherryPickOutcome
+from equalizador_promax.models import CandidateCommit, JiraItem, JiraPullRequest, MergeRecord, ReleaseReference
 from equalizador_promax.orchestrator import EqualizadorService
+from equalizador_promax.run_store import RunStore
 
 
 class OrchestratorTests(unittest.TestCase):
@@ -107,6 +111,7 @@ class OrchestratorTests(unittest.TestCase):
         }
 
         git = Mock()
+        git.repo_root = Path(r"C:\repo\msdyn-crm-b2b-webresources")
         git.collect_merges.return_value = [
             MergeRecord(
                 merge_hash="merge-a",
@@ -142,6 +147,7 @@ class OrchestratorTests(unittest.TestCase):
                 )
             ],
         ]
+        self.service.jira.fetch_pull_requests_for_issue_keys.return_value = {}
         journal = Mock()
 
         updated_payload, commits = self.service._build_commit_plan(
@@ -149,6 +155,7 @@ class OrchestratorTests(unittest.TestCase):
             git,
             journal,
             source_ref="origin/develop",
+            target_ref="origin/quality",
         )
 
         self.assertEqual(updated_payload["matched_merges"], ["merge-a", "merge-b"])
@@ -164,6 +171,200 @@ class OrchestratorTests(unittest.TestCase):
             source_merge="merge-a",
             source_keys=("CRMBR-3760", "CRMBR-3761", "CRMBR-3808", "CRMBR-3810"),
         )
+
+    def test_build_commit_plan_marks_commit_already_transferred_to_target_from_jira_pr(self) -> None:
+        payload = {
+            "stories": [{"key": "SQCRM-7691", "release_ids": [], "release_names": []}],
+            "eligible_items": [
+                {"key": "SQCRM-7691", "parent_key": None, "item_type": "story", "issue_id": "10001"},
+            ],
+            "stats": {},
+        }
+
+        git = Mock()
+        git.repo_root = Path(r"C:\repo\msdyn-crm-b2b-webresources")
+        git.collect_merges.return_value = [
+            MergeRecord(
+                merge_hash="merge-a",
+                timestamp=10,
+                subject="Merge pull request #58 from GitHub-EDP/SQCRM-7691_feature",
+            )
+        ]
+        git.get_merge_parents.return_value = ("base-a", "branch-a")
+        git.list_branch_commits.return_value = [
+            CandidateCommit(
+                commit_hash="abc123",
+                timestamp=10,
+                author="Ana",
+                subject="SQCRM-7691 ajuste",
+                source_merge="merge-a",
+                source_keys=("SQCRM-7691",),
+            )
+        ]
+        self.service.jira.fetch_pull_requests_for_issue_keys.return_value = {
+            "SQCRM-7691": [
+                JiraPullRequest(
+                    issue_key="SQCRM-7691",
+                    issue_id="10001",
+                    pr_id="58",
+                    title="Release 58",
+                    url="https://git.example/pr/58",
+                    status="MERGED",
+                    source_branch="equalizacao/bravo_release_58_00",
+                    destination_branch="quality",
+                    repository_name="msdyn-crm-b2b-webresources",
+                )
+            ]
+        }
+        journal = Mock()
+
+        updated_payload, _commits = self.service._build_commit_plan(
+            payload,
+            git,
+            journal,
+            source_ref="origin/develop",
+            target_ref="origin/quality",
+        )
+
+        self.assertEqual(updated_payload["commits"][0]["ja_no_destino"], "sim")
+        self.assertIn("https://git.example/pr/58", updated_payload["commits"][0]["prs_destino"])
+        self.assertEqual(updated_payload["stats"]["target_transferred_commit_count"], 1)
+
+    def test_apply_cherry_picks_skips_commit_when_cherry_pick_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_root = Path(temp_dir)
+            store = RunStore(state_root)
+            manifest = self.service._create_manifest(
+                Mock(repo_root=Path(r"C:\repo")),
+                store,
+                ["SQCRM-1"],
+                [],
+                release_id=None,
+                release_name=None,
+                fingerprint="fp-1",
+                source_ref="origin/develop",
+                target_ref="origin/quality",
+            )
+            manifest.status = "commits-ready"
+            manifest.phase = "commits-ready"
+            manifest.total_commits = 2
+            store.write_manifest(manifest)
+            store.write_items(
+                manifest.run_id,
+                {
+                    "stories": [{"key": "SQCRM-1", "release_ids": [], "release_names": []}],
+                    "eligible_items": [{"key": "SQCRM-1", "parent_key": None, "item_type": "story"}],
+                    "commits": [
+                        {
+                            "commit_hash": "abc123",
+                            "timestamp": 10,
+                            "author": "Ana",
+                            "subject": "feat: primeiro",
+                            "source_merge": "merge-a",
+                            "source_keys": ["SQCRM-1"],
+                            "cherry_pick_status": "pending",
+                        },
+                        {
+                            "commit_hash": "def456",
+                            "timestamp": 11,
+                            "author": "Ana",
+                            "subject": "feat: segundo",
+                            "source_merge": "merge-b",
+                            "source_keys": ["SQCRM-1"],
+                            "cherry_pick_status": "pending",
+                        },
+                    ],
+                    "stats": {"distinct_commit_count": 2},
+                },
+            )
+
+            git = Mock()
+            git.state_root.return_value = state_root
+            git.is_cherry_pick_in_progress.return_value = False
+            git.cherry_pick.side_effect = [
+                CherryPickOutcome(status="empty", stdout="", stderr=""),
+                CherryPickOutcome(status="applied", stdout="", stderr=""),
+            ]
+
+            with patch("equalizador_promax.orchestrator.GitAdapter", return_value=git):
+                updated_manifest = self.service.apply_cherry_picks(Path(r"C:\repo"), manifest.run_id)
+
+            items_payload = store.load_items(manifest.run_id)
+            self.assertEqual(updated_manifest.status, "completed")
+            self.assertEqual(updated_manifest.current_commit_index, 2)
+            self.assertEqual(updated_manifest.applied_commit_count, 1)
+            self.assertEqual(items_payload["commits"][0]["cherry_pick_status"], "skipped-empty")
+            self.assertEqual(items_payload["commits"][1]["cherry_pick_status"], "applied")
+            git.cherry_pick_skip.assert_called_once_with()
+
+    def test_resume_skips_empty_cherry_pick_and_continues_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_root = Path(temp_dir)
+            store = RunStore(state_root)
+            manifest = self.service._create_manifest(
+                Mock(repo_root=Path(r"C:\repo")),
+                store,
+                ["SQCRM-1"],
+                [],
+                release_id=None,
+                release_name=None,
+                fingerprint="fp-2",
+                source_ref="origin/develop",
+                target_ref="origin/quality",
+            )
+            manifest.status = "paused"
+            manifest.phase = "paused"
+            manifest.total_commits = 2
+            manifest.current_commit_index = 0
+            manifest.conflict_count = 1
+            manifest.conflict_commit = "abc123"
+            store.write_manifest(manifest)
+            store.write_items(
+                manifest.run_id,
+                {
+                    "stories": [{"key": "SQCRM-1", "release_ids": [], "release_names": []}],
+                    "eligible_items": [{"key": "SQCRM-1", "parent_key": None, "item_type": "story"}],
+                    "commits": [
+                        {
+                            "commit_hash": "abc123",
+                            "timestamp": 10,
+                            "author": "Ana",
+                            "subject": "feat: primeiro",
+                            "source_merge": "merge-a",
+                            "source_keys": ["SQCRM-1"],
+                            "cherry_pick_status": "conflict",
+                        },
+                        {
+                            "commit_hash": "def456",
+                            "timestamp": 11,
+                            "author": "Ana",
+                            "subject": "feat: segundo",
+                            "source_merge": "merge-b",
+                            "source_keys": ["SQCRM-1"],
+                            "cherry_pick_status": "pending",
+                        },
+                    ],
+                    "stats": {"distinct_commit_count": 2},
+                },
+            )
+
+            git = Mock()
+            git.state_root.return_value = state_root
+            git.is_cherry_pick_in_progress.return_value = True
+            git.cherry_pick_continue.return_value = CherryPickOutcome(status="empty", stdout="", stderr="")
+            git.cherry_pick.return_value = CherryPickOutcome(status="applied", stdout="", stderr="")
+
+            with patch("equalizador_promax.orchestrator.GitAdapter", return_value=git):
+                updated_manifest = self.service.resume(Path(r"C:\repo"), manifest.run_id)
+
+            items_payload = store.load_items(manifest.run_id)
+            self.assertEqual(updated_manifest.status, "completed")
+            self.assertEqual(updated_manifest.current_commit_index, 2)
+            self.assertEqual(updated_manifest.applied_commit_count, 1)
+            self.assertIsNone(updated_manifest.conflict_commit)
+            self.assertEqual(items_payload["commits"][0]["cherry_pick_status"], "skipped-empty")
+            self.assertEqual(items_payload["commits"][1]["cherry_pick_status"], "applied")
+            git.cherry_pick_skip.assert_called_once_with()
 
 
 if __name__ == "__main__":
